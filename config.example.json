@@ -1,0 +1,12 @@
+{
+  "price_column": "",
+  "price_multiplier": 1,
+  "defaults": {
+    "*申报价格\n(店铺币种)": "500",
+    "*长（cm）": "10",
+    "*宽（cm）": "10",
+    "*高（cm）": "10",
+    "*重量（g）": "100"
+  },
+  "sku_overrides": {}
+}
