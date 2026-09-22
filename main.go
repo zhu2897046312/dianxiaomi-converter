@@ -2,7 +2,9 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
+	_ "embed"
 	"encoding/csv"
 	"encoding/json"
 	"encoding/xml"
@@ -44,22 +46,84 @@ type product struct {
 
 var headers = []string{"*产品标题", "*英文标题", "产品描述", "产品货号", "*变种属性名称一", "*变种属性值一", "变种属性名称二", "变种属性值二", "预览图", "*申报价格\n(店铺币种)", "SKU货号", "*长（cm）", "*宽（cm）", "*高（cm）", "*重量（g）", "识别码类型", "识别码", "站外产品链接", "*轮播图", "*产品素材图", "外包装形状", "外包装类型", "外包装图片", "建议售价（USD）", "库存", "发货时效（天）", "是否定制品", "产品视频url", "描述视频url", "产品说明书", "说明书语种", "SKU分类类型", "SKU分类数量", "SKU分类单位", "是否独立包装", "单品净含量", "单品净含量单位", "内计共含件数", "是否同品", "总净含量", "总净含量单位", "包装清单", "包装清单数量", "是否敏感属性", "敏感属性值", "储电容量", "刀具长度", "刀刃角度", "液体容量", "来源URL", "产地"}
 
+//go:embed templates/import_created_product_popTemu.xlsx
+var embeddedTemplate []byte
+
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	pause := len(os.Args) == 1 || (len(os.Args) == 2 && !strings.HasPrefix(os.Args[1], "-"))
+	err := run()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "转换失败：", err)
+	}
+	if pause {
+		fmt.Println("按回车键关闭窗口……")
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+	}
+	if err != nil {
 		os.Exit(1)
+	}
+}
+
+func nextOutput(input string) (string, error) {
+	base := strings.TrimSuffix(input, filepath.Ext(input)) + "_店小秘"
+	for i := 0; ; i++ {
+		path := base + ".xlsx"
+		if i > 0 {
+			path = fmt.Sprintf("%s_%d.xlsx", base, i)
+		}
+		available := true
+		for _, candidate := range []string{path, path + ".report.json"} {
+			_, err := os.Stat(candidate)
+			if err == nil {
+				available = false
+			} else if !os.IsNotExist(err) {
+				return "", err
+			}
+		}
+		if available {
+			return path, nil
+		}
 	}
 }
 func run() error {
 	input := flag.String("input", "", "采集 CSV（UTF-8）")
-	template := flag.String("template", "templates/import_created_product_popTemu.xlsx", "店小秘模板")
-	output := flag.String("output", "output/dianxiaomi.xlsx", "输出 XLSX（不得已存在）")
+	template := flag.String("template", "", "自定义店小秘模板（默认使用内置模板）")
+	output := flag.String("output", "", "输出 XLSX（默认在 CSV 旁生成，不覆盖已有文件）")
 	config := flag.String("config", "", "JSON 配置")
 	strict := flag.Bool("strict", false, "存在待处理问题时不输出 XLSX")
 	flag.Parse()
+	args := flag.Args()
+	if len(args) > 2 {
+		return fmt.Errorf("一次拖入一个 CSV；命令行用法：tool.exe 输入.csv 输出.xlsx")
+	}
+	if len(args) > 0 {
+		if *input != "" {
+			return fmt.Errorf("不能同时使用位置参数和 -input")
+		}
+		*input = args[0]
+	}
+	if len(args) > 1 {
+		if *output != "" {
+			return fmt.Errorf("不能同时使用位置参数和 -output")
+		}
+		*output = args[1]
+	}
 	if *input == "" {
 		flag.Usage()
-		return fmt.Errorf("请指定 -input")
+		return fmt.Errorf("请把采集任务.csv 拖到本程序图标上，或运行：tool.exe 输入.csv 输出.xlsx")
+	}
+	if !strings.EqualFold(filepath.Ext(*input), ".csv") {
+		return fmt.Errorf("输入文件必须是 .csv")
+	}
+	if *output == "" {
+		var err error
+		*output, err = nextOutput(*input)
+		if err != nil {
+			return err
+		}
+	}
+	if !strings.EqualFold(filepath.Ext(*output), ".xlsx") {
+		return fmt.Errorf("输出必须使用 .xlsx 后缀，例如 dianxiaomi.xlsx")
 	}
 	cfg := Config{PriceMultiplier: 1, Defaults: map[string]string{}}
 	if *config != "" {
@@ -334,11 +398,18 @@ func escaped(s string) string { var b bytes.Buffer; xml.EscapeText(&b, []byte(s)
 
 // Replace only data rows of the supplied template; all other ZIP entries stay intact.
 func writeWorkbook(template, output string, rows [][]string) error {
-	z, e := zip.OpenReader(template)
+	data := embeddedTemplate
+	if template != "" {
+		var err error
+		data, err = os.ReadFile(template)
+		if err != nil {
+			return err
+		}
+	}
+	z, e := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if e != nil {
 		return e
 	}
-	defer z.Close()
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 	found := false

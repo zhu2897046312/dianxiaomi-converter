@@ -88,3 +88,26 @@ func TestWorkbookPreservesExampleAndText(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestAutoOutputAvoidsExistingFiles(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "采集 任务.csv")
+	first, err := nextOutput(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(first+".report.json", []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := nextOutput(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || !strings.HasSuffix(second, "_1.xlsx") {
+		t.Fatal(second)
+	}
+}
+func TestEmbeddedTemplate(t *testing.T) {
+	if err := writeWorkbook("", filepath.Join(t.TempDir(), "out.xlsx"), nil); err != nil {
+		t.Fatal(err)
+	}
+}
