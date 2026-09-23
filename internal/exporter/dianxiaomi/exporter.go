@@ -21,12 +21,35 @@ const maxOptions = 2
 
 // Options 是店小秘目标的配置。键均为模板列名（含星号、全角括号）。
 type Options struct {
-	PriceMultiplier float64                      `json:"price_multiplier"`
-	Defaults        map[string]string            `json:"defaults"`      // 仅填充空白单元格
-	Overrides       map[string]map[string]string `json:"sku_overrides"` // 按 SKU 强制覆盖，优先级最高
+	RepeatImagesToTen  *bool                        `json:"repeat_images_to_ten"` // 默认开启；无图时无法补齐。
+	CurrencyConversion CurrencyConversion           `json:"currency_conversion"`
+	PriceMultiplier    float64                      `json:"price_multiplier"`
+	Defaults           map[string]string            `json:"defaults"`      // 仅填充空白单元格
+	Overrides          map[string]map[string]string `json:"sku_overrides"` // 按 SKU 强制覆盖，优先级最高
+}
+
+// Rates 为每单位来源币种对应的 CNY 金额，新增币种只需添加配置。
+type CurrencyConversion struct {
+	Enabled        bool               `json:"enabled"`
+	SourceCurrency string             `json:"source_currency"`
+	Rates          map[string]float64 `json:"rates"`
+}
+
+func (c CurrencyConversion) rate() (float64, error) {
+	if !c.Enabled {
+		return 1, nil
+	}
+	r, ok := c.Rates[strings.ToUpper(strings.TrimSpace(c.SourceCurrency))]
+	if !ok || r <= 0 || math.IsNaN(r) || math.IsInf(r, 0) {
+		return 0, fmt.Errorf("currency_conversion：来源币种 %q 缺少有效的 CNY 汇率（必须大于 0）", c.SourceCurrency)
+	}
+	return r, nil
 }
 
 func (o Options) Validate() error {
+	if _, err := o.CurrencyConversion.rate(); err != nil {
+		return err
+	}
 	if o.PriceMultiplier <= 0 || math.IsNaN(o.PriceMultiplier) || math.IsInf(o.PriceMultiplier, 0) {
 		return fmt.Errorf("price_multiplier 必须大于 0")
 	}
@@ -57,20 +80,40 @@ func known(k string) bool {
 // Export 为每个变种生成一行，列顺序与 Headers 一致。
 func Export(products []model.Product, opts Options) ([][]string, model.Report, error) {
 	report := model.Report{Target: "dianxiaomi", Issues: []model.Issue{}}
+	rate, err := opts.CurrencyConversion.rate()
+	if err != nil {
+		return nil, report, err
+	}
 	out := [][]string{}
 	seen := map[string]bool{}
 	titles := map[string]string{}
 	for _, p := range products {
 		h := p.Handle
 		report.Products++
-		// 轮播图只用商品级图片，所有 SKU 共用；变种图用于各自的预览图。
+		// 商品图优先，按 SKU 顺序追加不同的变种图，所有 SKU 共用轮播图。
 		var allImgs []string
+		imageSeen := map[string]bool{}
+		addImage := func(url string) {
+			if url != "" && !imageSeen[url] {
+				allImgs = append(allImgs, url)
+				imageSeen[url] = true
+			}
+		}
 		for _, img := range p.Images {
-			allImgs = append(allImgs, img.URL)
+			addImage(img.URL)
+		}
+		for _, v := range p.Variants {
+			addImage(v.Image)
 		}
 		imgs := allImgs
 		if len(imgs) > maxCarouselImages {
 			imgs = imgs[:maxCarouselImages]
+		}
+		if len(imgs) > 0 && len(imgs) < maxCarouselImages && (opts.RepeatImagesToTen == nil || *opts.RepeatImagesToTen) {
+			imgs = append([]string(nil), imgs...)
+			for len(imgs) < maxCarouselImages {
+				imgs = append(imgs, allImgs[len(imgs)%len(allImgs)])
+			}
 		}
 		for i, v := range p.Variants {
 			rowNo := len(out) + 2
@@ -117,6 +160,13 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 			if i == 0 && len(allImgs) > maxCarouselImages {
 				warn(fmt.Sprintf("商品共 %d 张图片，轮播图仅保留前 %d 张", len(allImgs), maxCarouselImages))
 			}
+			if i == 0 && len(allImgs) < maxCarouselImages {
+				if len(imgs) == maxCarouselImages {
+					warn(fmt.Sprintf("商品图和 SKU 图去重后仅 %d 张，已重复补齐至 10 个轮播图链接", len(allImgs)))
+				} else {
+					warn(fmt.Sprintf("商品图和 SKU 图去重后仅 %d 张，轮播图不足 10 张", len(allImgs)))
+				}
+			}
 			if len(imgs) > 0 {
 				m["*轮播图"] = strings.Join(imgs, "\n")
 				// 变种没有专属图片时，用商品首图作为预览图，保证每个 SKU 都有图。
@@ -129,7 +179,11 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 				if e != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 					warn("价格不是有效数字：" + v.Price)
 				} else {
-					m[Headers[9]] = strconv.FormatFloat(n*opts.PriceMultiplier, 'f', 2, 64)
+					amount := n * opts.PriceMultiplier * rate
+					if math.IsInf(amount, 0) || math.IsNaN(amount) {
+						return nil, report, fmt.Errorf("SKU %s 换算后价格超出有效范围", sku)
+					}
+					m[Headers[9]] = strconv.FormatFloat(amount, 'f', 2, 64)
 				}
 			}
 			for k, val := range opts.Defaults {

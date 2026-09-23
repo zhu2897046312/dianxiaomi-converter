@@ -179,3 +179,42 @@ func TestExampleConfigValid(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAutoDetectCollectionConfig(t *testing.T) {
+	b := tu.CSV([]string{"Title", "URL handle", "Description", "Status", "SKU", "Option1 name", "Option1 value", "Price", "Inventory quantity", "Product image URL", "Variant image URL"},
+		tu.Row{"Title": "商品", "URL handle": "p", "Description": "<p>说明</p>", "Status": "ACTIVE", "SKU": "001", "Option1 name": "Color", "Option1 value": "Black", "Price": "19.99", "Inventory quantity": "1000", "Product image URL": "https://a/1", "Variant image URL": "https://a/2"},
+		tu.Row{"URL handle": "p", "SKU": "002", "Option1 value": "White", "Price": "20"})
+	for _, input := range [][]byte{b, bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))} {
+		cfg, err := configForInput(input, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, report, err := convert(input, cfg, "medusa", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		col, rows := readCSV(t, out)
+		if report.Products != 1 || report.Variants != 2 || rows[0][col["Variant Price USD"]] != "19.99" || rows[0][col["Product Description"]] != "<p>说明</p>" || rows[1][col["Variant Option 1 Name"]] != "Color" {
+			t.Fatal(rows, report)
+		}
+		if _, report, err = convert(input, cfg, "dianxiaomi", nil); err != nil || report.Variants != 2 {
+			t.Fatal(err, report)
+		}
+	}
+	// 显式配置不能被自动识别覆盖，即使文件与配置不匹配。
+	cfg, err := configForInput(b, "config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := convert(b, cfg, "medusa", nil); err == nil {
+		t.Fatal("explicit configuration was ignored")
+	}
+	legacy := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "001"})
+	cfg, err = configForInput(legacy, "")
+	if err != nil || cfg.SourceFields.Handle != "Handle" {
+		t.Fatal(cfg, err)
+	}
+	if _, _, err := convert(legacy, cfg, "dianxiaomi", nil); err != nil {
+		t.Fatal(err)
+	}
+}

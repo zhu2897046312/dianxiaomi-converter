@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	_ "embed"
+	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -58,6 +59,40 @@ func loadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+//go:embed config.shopify-collection.json
+var collectionConfig []byte
+
+// configForInput 按必需表头选择内置配置；显式配置始终优先。
+// 字段映射仍由 JSON 维护，不在解析器中增加表头别名。
+func configForInput(b []byte, configPath string) (Config, error) {
+	if configPath != "" {
+		return loadConfig(configPath)
+	}
+	cfg := defaultConfig()
+	header, err := csv.NewReader(bytes.NewReader(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")))).Read()
+	if err != nil {
+		return cfg, err
+	}
+	cols := make(map[string]bool, len(header))
+	for _, h := range header {
+		cols[h] = true
+	}
+	matches := func(f shopify.Fields) bool {
+		return cols[f.Handle] && cols[f.Title] && cols[f.SKU] && cols[f.Option1Value] && cols[f.ImageURL]
+	}
+	if matches(cfg.SourceFields) {
+		return cfg, nil
+	}
+	alternative := defaultConfig()
+	if err := json.Unmarshal(collectionConfig, &alternative); err != nil {
+		return cfg, fmt.Errorf("内置 Shopify 配置无效：%w", err)
+	}
+	if matches(alternative.SourceFields) {
+		return alternative, nil
+	}
+	return cfg, nil
+}
+
 // sourceFields 把旧版 price_column 归一到 source_fields.price，之后价格只从这一个字段读取。
 // price_column 非空时优先：它只可能由用户显式填写，而 source_fields.price 可能只是 Shopify 默认值。
 // 用户显式指定的价格列必须存在，因此同时返回需额外校验的字段键。
@@ -74,9 +109,11 @@ func (c Config) sourceFields() (shopify.Fields, []string) {
 // price_multiplier 未在 dianxiaomi 中填写（为 0）时沿用顶层值；defaults、sku_overrides 按键合并，同键以新块为准。
 func (c Config) dianxiaomiOptions() dianxiaomi.Options {
 	o := dianxiaomi.Options{
-		PriceMultiplier: c.Dianxiaomi.PriceMultiplier,
-		Defaults:        map[string]string{},
-		Overrides:       map[string]map[string]string{},
+		RepeatImagesToTen:  c.Dianxiaomi.RepeatImagesToTen,
+		CurrencyConversion: c.Dianxiaomi.CurrencyConversion,
+		PriceMultiplier:    c.Dianxiaomi.PriceMultiplier,
+		Defaults:           map[string]string{},
+		Overrides:          map[string]map[string]string{},
 	}
 	if o.PriceMultiplier == 0 {
 		o.PriceMultiplier = c.PriceMultiplier
@@ -248,12 +285,13 @@ func run() error {
 	if !strings.EqualFold(filepath.Ext(*output), t.ext) {
 		return fmt.Errorf("target %s 的输出必须使用 %s 后缀", *targetName, t.ext)
 	}
-	cfg := defaultConfig()
-	if *config != "" {
-		var e error
-		if cfg, e = loadConfig(*config); e != nil {
-			return e
-		}
+	b, e := os.ReadFile(*input)
+	if e != nil {
+		return e
+	}
+	cfg, e := configForInput(b, *config)
+	if e != nil {
+		return e
 	}
 	if e := cfg.validate(); e != nil {
 		return e
@@ -264,10 +302,6 @@ func run() error {
 		if tpl, e = os.ReadFile(*template); e != nil {
 			return e
 		}
-	}
-	b, e := os.ReadFile(*input)
-	if e != nil {
-		return e
 	}
 	data, report, e := convert(b, cfg, *targetName, tpl)
 	if e != nil {

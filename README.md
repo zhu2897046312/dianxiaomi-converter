@@ -26,6 +26,8 @@ go build -o bin/dxm-converter.exe .
 
 输入必须是 UTF-8（可带 BOM）。Excel 另存的 GBK CSV 会明确报错，请另存为“CSV UTF-8”。
 
+未指定 `-config` 时（包括直接拖入 CSV），按表头自动选择传统 Shopify 配置或 `config.shopify-collection.json` 中的采集配置（`URL handle / SKU / Product image URL`）。配置已内置到 exe，无需随程序复制 JSON。显式传入 `-config` 时完全使用指定配置；修改内置配置后需要重新编译。
+
 ## 架构
 
 ```
@@ -57,7 +59,7 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
 | option1/2（Option1/2 Name、Value） | 两组变种属性；Color/Colour→颜色，Size→尺寸；第三组报错停止 |
 | price（Variant Price） | 申报价格 × `price_multiplier` |
 | variant_image_url（Variant Image） | 预览图；缺失时用轮播图第一张 |
-| image_url + image_position | 轮播图：换行拼接，最多 10 张，超出写入报告 |
+| image_url + image_position + variant_image_url | 轮播图：商品图优先，按 SKU 顺序补入不同的变种图，最多 10 张；仍不足时默认重复补齐到 10 个链接，报告注明 |
 | weight_grams（Variant Grams） | 重量（g）；0 视为缺失 |
 | inventory_qty（Variant Inventory Qty） | 库存 |
 | barcode（Variant Barcode） | 识别码；类型需显式配置 |
@@ -99,5 +101,23 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
   ```
 
 - `dianxiaomi`：`price_multiplier`、`defaults`（仅填空白）、`sku_overrides`（按 SKU 覆盖）。键为模板列名（含星号、全角括号）；申报价列名为 `*申报价格\n(店铺币种)`，JSON 中 `\n` 表示换行。
+
+  `repeat_images_to_ten` 默认为 `true`：不同图片不足 10 张时，循环重复现有图片补齐 10 个链接；设为 `false` 则只保留实际不同图片。完全无图时无法补齐，会报告缺图。SKU 显式覆盖仍具有最高优先级。
+
+  `currency_conversion` 控制来源价格换算为 CNY，默认关闭。来源 CSV 不含币种时必须在配置中指定，不能从价格数字自动判断。将所用配置中的该块改成以下内容即可启用美元换算；欧元将 `source_currency` 改为 `EUR`，新增币种直接在 `rates` 添加汇率（键使用大写币种代码）：
+
+  ```json
+  "currency_conversion": {
+    "enabled": true,
+    "source_currency": "USD",
+    "rates": { "USD": 7, "EUR": 10 }
+  }
+  ```
+
+  最终申报价 = 来源价格 × `price_multiplier` × 汇率，保留两位小数。关闭换算时汇率按 1；默认价格和 SKU 覆盖价格视为目标币种，不再次换算。启用时缺少对应汇率或汇率非正数会报错。使用外部配置无需重新编译：
+
+  ```powershell
+  .\main.exe -config config.shopify-collection.json -input "采集任务-25-20260923.csv"
+  ```
 - `medusa`：`price_currency`、`status_map`、`defaults`（键为 Medusa 列名，仅填空白）。
 - 旧版顶层键继续兼容：`price_multiplier`、`defaults`、`sku_overrides` 作用于店小秘，与 `dianxiaomi` 块按键合并、同键以 `dianxiaomi` 块为准；`price_column` 等价于 `source_fields.price`，两者同时配置时 `price_column` 优先，且该列不存在会报错。

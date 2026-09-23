@@ -14,7 +14,16 @@ import (
 
 const templatePath = "../../../templates/import_created_product_popTemu.xlsx"
 
-func opts() Options { return Options{PriceMultiplier: 1} }
+func opts() Options { repeat := false; return Options{PriceMultiplier: 1, RepeatImagesToTen: &repeat} }
+
+func TestRepeatImagesToTen(t *testing.T) {
+	b := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "1", "Image Src": "https://a/1", "Variant Image": "https://a/2"})
+	rows, msgs := export(t, b, Options{PriceMultiplier: 1})
+	imgs := strings.Split(rows[0][idx("*轮播图")], "\n")
+	if len(imgs) != 10 || imgs[9] != "https://a/2" || !strings.Contains(strings.Join(msgs, "|"), "重复补齐") {
+		t.Fatal(imgs, msgs)
+	}
+}
 
 func export(t *testing.T, b []byte, o Options) ([][]string, []string) {
 	t.Helper()
@@ -104,9 +113,58 @@ func TestPreviewPrefersVariantImage(t *testing.T) {
 	if rows[0][idx("预览图")] != "https://a/1" || rows[1][idx("预览图")] != "https://v/b" || rows[1][idx("*产品素材图")] != "https://v/b" {
 		t.Fatal(rows)
 	}
-	// 店小秘轮播图只用商品图，不并入变种图。
-	if rows[1][idx("*轮播图")] != "https://a/1" {
+	// 商品图不足十张时追加 SKU 图片。
+	if rows[1][idx("*轮播图")] != "https://a/1\nhttps://v/b" {
 		t.Fatal(rows[1][idx("*轮播图")])
+	}
+}
+
+func TestCarouselFilledFromSKUs(t *testing.T) {
+	var rs []tu.Row
+	for i := 0; i < 12; i++ {
+		rs = append(rs, tu.Row{"Handle": "p", "Title": "T", "Variant SKU": fmt.Sprint(i), "Option1 Value": fmt.Sprint(i), "Image Src": "https://a/0", "Variant Image": fmt.Sprintf("https://a/%d", i)})
+	}
+	rows, _ := export(t, tu.Shopify(rs...), opts())
+	for _, row := range rows {
+		images := strings.Split(row[idx("*轮播图")], "\n")
+		if len(images) != 10 || images[0] != "https://a/0" || images[9] != "https://a/9" {
+			t.Fatal(images)
+		}
+	}
+}
+
+func TestCurrencyConversion(t *testing.T) {
+	b := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "001", "Variant Price": "24.99"}, tu.Row{"Handle": "p", "Variant SKU": "002"})
+	for _, tc := range []struct {
+		enabled        bool
+		currency, want string
+	}{{false, "USD", "24.99"}, {true, "USD", "174.93"}, {true, "EUR", "249.90"}, {true, "GBP", "199.92"}} {
+		o := opts()
+		o.CurrencyConversion = CurrencyConversion{Enabled: tc.enabled, SourceCurrency: tc.currency, Rates: map[string]float64{"USD": 7, "EUR": 10, "GBP": 8}}
+		rows, _ := export(t, b, o)
+		if rows[0][priceCol] != tc.want || rows[1][priceCol] != "500" {
+			t.Fatal(tc, rows)
+		}
+		o.Overrides = map[string]map[string]string{"001": {Headers[9]: "99"}}
+		rows, _ = export(t, b, o)
+		if rows[0][priceCol] != "99" {
+			t.Fatal(rows)
+		}
+	}
+	o := opts()
+	o.CurrencyConversion = CurrencyConversion{Enabled: true, SourceCurrency: "USD"}
+	if o.Validate() == nil {
+		t.Fatal("missing rate must fail")
+	}
+	o.CurrencyConversion.Rates = map[string]float64{"USD": -7}
+	if o.Validate() == nil {
+		t.Fatal("negative rate must fail")
+	}
+	o.CurrencyConversion.Rates["USD"] = 7
+	o.PriceMultiplier = 2
+	rows, _ := export(t, b, o)
+	if rows[0][priceCol] != "349.86" {
+		t.Fatal(rows)
 	}
 }
 
