@@ -1,4 +1,5 @@
 # Shopify CSV → 多目标格式转换
+> Open-source companion utility for the [Sweet Potato Head Product Collection Tool](https://www.sweetphotohead.com/tools/collection-jobs).
 
 Go 命令行项目，无第三方依赖。输入为 Shopify 官方商品导出 UTF-8 CSV（列名可通过配置适配其他来源），当前支持两个输出目标：
 
