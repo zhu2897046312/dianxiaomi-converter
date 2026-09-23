@@ -1,5 +1,4 @@
 {
-  "price_column": "",
   "price_multiplier": 1,
   "defaults": {
     "*申报价格\n(店铺币种)": "500",
@@ -8,5 +7,28 @@
     "*高（cm）": "10",
     "*重量（g）": "100"
   },
-  "sku_overrides": {}
+  "sku_overrides": {},
+  "source_fields": {
+    "handle": "Handle",
+    "title": "Title",
+    "description": "Body (HTML)",
+
+    "sku": "Variant SKU",
+
+    "option1_name": "Option1 Name",
+    "option1_value": "Option1 Value",
+    "option2_name": "Option2 Name",
+    "option2_value": "Option2 Value",
+    "option3_name": "Option3 Name",
+    "option3_value": "Option3 Value",
+
+    "price": "Variant Price",
+    "weight_grams": "Variant Grams",
+    "inventory_qty": "Variant Inventory Qty",
+    "barcode": "Variant Barcode",
+
+    "image_url": "Image Src",
+    "image_position": "Image Position",
+    "variant_image_url": "Variant Image"
+  }
 }
