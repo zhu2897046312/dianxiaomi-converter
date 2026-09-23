@@ -1,17 +1,9 @@
 {
-  "price_multiplier": 1,
-  "defaults": {
-    "*申报价格\n(店铺币种)": "500",
-    "*长（cm）": "10",
-    "*宽（cm）": "10",
-    "*高（cm）": "10",
-    "*重量（g）": "100"
-  },
-  "sku_overrides": {},
   "source_fields": {
     "handle": "Handle",
     "title": "Title",
     "description": "Body (HTML)",
+    "status": "Status",
 
     "sku": "Variant SKU",
 
@@ -23,12 +15,44 @@
     "option3_value": "Option3 Value",
 
     "price": "Variant Price",
+    "compare_at_price": "Variant Compare At Price",
+
     "weight_grams": "Variant Grams",
-    "inventory_qty": "Variant Inventory Qty",
     "barcode": "Variant Barcode",
+
+    "inventory_tracker": "Variant Inventory Tracker",
+    "inventory_qty": "Variant Inventory Qty",
+    "inventory_policy": "Variant Inventory Policy",
 
     "image_url": "Image Src",
     "image_position": "Image Position",
     "variant_image_url": "Variant Image"
+  },
+  "dianxiaomi": {
+    "price_multiplier": 1,
+    "defaults": {
+      "*申报价格\n(店铺币种)": "500",
+      "*长（cm）": "10",
+      "*宽（cm）": "10",
+      "*高（cm）": "10",
+      "*重量（g）": "100"
+    },
+    "sku_overrides": {}
+  },
+  "medusa": {
+    "price_currency": "USD",
+    "status_map": {
+      "active": "published",
+      "draft": "draft",
+      "archived": "draft"
+    },
+    "defaults": {
+      "Product Discountable": "TRUE",
+      "Shipping Profile Id": "",
+      "Product Sales Channel 1": "",
+      "Product Length": "",
+      "Product Width": "",
+      "Product Height": ""
+    }
   }
 }
