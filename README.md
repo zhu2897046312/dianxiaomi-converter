@@ -31,13 +31,35 @@ go build -o bin/dxm-converter.exe .
 
 未指定 `-config` 时，会自动读取当前目录、程序旁边或 `bin` 上一级的 `config.dianxiaomi.json`。其顶层 `image_filter` 对两个目标生效，`dianxiaomi` 块只影响店小秘。来源字段仍按表头自动选择传统 Shopify 配置或采集配置（`URL handle / SKU / Product image URL`）。显式传入 `-config` 时使用指定配置覆盖自动识别结果。找不到外部配置时使用 exe 内置默认值。
 
+## 直接拖入时的默认规则
+
+以下规则是当前工具的最终行为。店小秘规则只修改店小秘 XLSX，不修改同批数据的 Medusa 内容。
+
+| 项目 | 默认行为 | 可配置项 |
+| --- | --- | --- |
+| 入口与输出 | 把一个 Shopify/采集 CSV 拖到 EXE，只生成店小秘 XLSX；不覆盖已有文件 | 顶层 `output_medusa: true` 同时生成 Medusa；也可使用 `-target` |
+| 店小秘模板 | 使用内置 `templates/import_created_product_popTemu.xlsx`，每次生成前核对表头、列数和顺序 | `-template` 可指定同结构模板 |
+| 图片检测 | 完整 URL 去重后只检查一次；仅确认 HTTP 403 才过滤，超时或其他状态保留并报告 | `image_filter.timeout_seconds`、`image_filter.concurrency` |
+| 全部图片 403 | 店小秘保留来源顺序第一张原链接，补齐轮播图、预览图和产品素材图；不会重复填满 10 张 | 固定规则；报告会提示该图仍可能被店小秘拒绝 |
+| 轮播图 | 商品图优先，再补不同的 SKU 图；去空、去重、最多 10 张；只有 1 张就只填 1 张 | `repeat_images_to_ten` 已停用 |
+| 详情 GIF | `img/source` 中的 GIF 从最终轮播图最多 10 张里稳定随机替换，优先使用非 GIF；普通链接不改 | 店小秘专用规则 |
+| 产品货号 | 只保留英文字母、数字、点、下划线和连字符 | `dianxiaomi.clean_product_code`，默认 `true` |
+| SKU 货号 | 只删除中文汉字；数字、英文、空格、标点、括号和 Emoji 保留 | `dianxiaomi.remove_chinese_in_sku`，默认 `true` |
+| 店小秘文案 | 标题、描述正文、规格名/值等删除 Emoji；保留中文、英文、数字、普通标点、HTML 和普通链接 | 固定规则；Medusa 保留原文 |
+| 申报价格 | 来源价 × `price_multiplier` × CNY 汇率；默认把来源价视为 USD，按 `USD × 7` 输出 CNY | `dianxiaomi.currency_conversion`、`price_multiplier` |
+| 建议售价 | 默认把爬取价格直接填入“建议售价（USD）”，不乘 `price_multiplier` | `dianxiaomi.suggested_price.source_currency` 支持 USD、EUR、CNY 或 rates 中新增币种 |
+| 店小秘默认值 | 申报价 500；长宽高各 10 cm；重量 100 g；发货时效 9 天；产地 `中国-广东省` | `dianxiaomi.defaults` 或 `sku_overrides` |
+| 必填保护 | 所有星号列和产地不能为空；申报价、尺寸、重量必须为正数；无法补齐时只写报告，不生成无效 XLSX | 固定规则，无需开启 `-strict` |
+
+店小秘模板没有“运费模板”列，因此截图中的运费模板仍需在店小秘账号或产品模板中设置，不能通过当前 XLSX 写入。
+
 ## 图片过滤与去重
 
 - 图片按完整 URL 去重后检测，同一个 URL 在多个商品、SKU、描述或配置中出现也只请求一次。保留查询参数，不把不同尺寸或版本擅自当成同一图片。
 - 使用 GET 检查（HEAD 的结果可能不同），收到响应头后关闭响应体。**仅移除确定返回 403 的链接**；200、404、429 等其他状态保留；网络错误、超时不当作 403，会保留原链接并在报告中说明。
-- 检查范围包括商品图、SKU 图、描述内的 `img src/data-src/srcset`、`picture source`，以及配置中的预览图、轮播图、素材图、包装图、图片/描述默认值和覆盖值。描述中的标签含 403 图片候选地址时移除整个对应图片标签，保留文字。
+- 检查范围包括商品图、SKU 图、描述内的 `img src/data-src/srcset`、`picture source`，以及配置中的预览图、轮播图、素材图、包装图、图片/描述默认值和覆盖值。非 GIF 的描述标签含 403 图片候选地址时移除整个标签并保留文字；店小秘来源描述中的 403 GIF 标签暂时保留，随后替换为最终轮播图。Medusa 仍删除该 403 GIF 标签。
 - 每个商品的轮播/图片列表只保留不同链接。店小秘最多 10 张，**只有 1 张就填 1 张，其他位置不补重复图**；Medusa 也不重复填入编号图片列。描述内重复 `img src` 只保留第一次。商品缩略图、SKU 预览图仍可引用同一张图，跨 SKU 共用商品图片属于正常关联，不会因此删掉商品或 SKU。
-- 店小秘在过滤、默认配置、SKU 覆盖完成后补齐图片：预览图取有效轮播首图，素材图取最终预览图；空轮播可使用同商品剩余图片。若商品/SKU 图片全部为 403 且没有可用配置图片，保留按来源顺序第一张原图，各 SKU 的轮播、预览和素材图可共用这一个链接。不会重复填满 10 张，也不会恢复描述中的 403 图片。报告会提示该原图仍可能被店小秘拒绝抓取。Medusa 仍删除全部 403 图片。
+- 店小秘在过滤、默认配置、SKU 覆盖完成后补齐图片：预览图取有效轮播首图，素材图取最终预览图；空轮播可使用同商品剩余图片。若商品/SKU 图片全部为 403 且没有可用配置图片，保留按来源顺序第一张原图，各 SKU 的轮播、预览和素材图可共用这一个链接。不会重复填满 10 张，也不会恢复非 GIF 的 403 描述图片；403 GIF 按详情替换规则处理。报告会提示兜底原图仍可能被店小秘拒绝抓取。Medusa 仍删除全部 403 图片。
 - 店小秘所有星号必填列及产地在写入 XLSX 前强制校验，申报价、尺寸和重量须为正数。源文件完全没有图片、清理 Emoji 后标题/规格为空、配置覆盖清空必填字段等无法补齐的情况，只生成错误报告，不生成无效 XLSX，无需开启 `-strict`。描述图片不会自动充当轮播/素材图。
 - 报告 `image_filter.results` 记录每个 URL 的状态、是否从共享数据中移除及错误；店小秘保留原图的例外另在 `issues` 中记录。状态以本电脑当次请求为准，可能与店小秘服务器请求结果不同。
 
@@ -133,6 +155,8 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
 
 通过 `-config config.json` 使用，所有键都可省略，只需写要覆盖的项；`config.example.json` 列出全部默认值。
 
+- `output_medusa`：顶层开关，默认 `false`。直接拖入 CSV 时只生成店小秘 XLSX；设为 `true` 后同时生成 Medusa CSV。命令行显式 `-target` 优先。
+
 - `source_fields`：来源 CSV 哪一列是什么。未写的键保持 Shopify 默认。例如另一种来源：
 
   ```json
@@ -140,6 +164,8 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
   ```
 
 - `dianxiaomi`：`price_multiplier`、`defaults`（仅填空白）、`sku_overrides`（按 SKU 覆盖）。键为模板列名（含星号、全角括号）；申报价列名为 `*申报价格\n(店铺币种)`，JSON 中 `\n` 表示换行。
+
+  `clean_product_code` 默认为 `true`：清理产品货号，只保留 `A-Z a-z 0-9 . _ -`。它在 `defaults` 和 `sku_overrides` 之后执行，因此覆盖值也不能重新带入中文、Emoji、空格、斜杠或括号。设置为 `false` 可保留来源或覆盖的原始产品货号。
 
   `repeat_images_to_ten` 已停用，保留键名仅用于兼容旧配置；无论旧配置为 `true` 还是 `false`，现在始终只保留实际不同图片，不重复补齐。完全无图时会报告缺图并阻止生成 XLSX；全 403 时按上述规则保留一个原链接。SKU 显式图片覆盖也必须经过 403 过滤及轮播去重。
 
