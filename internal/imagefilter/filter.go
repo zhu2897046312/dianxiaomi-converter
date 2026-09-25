@@ -158,10 +158,18 @@ func (p *Policy) List(s string) string {
 
 // HTMLURLs and HTML use the HTML tokenizer, preserving untouched markup byte-for-byte.
 // Repeated <img> src URLs are removed within a description, not across SKU associations.
-func HTMLURLs(s string) []string       { _, urls := rewriteHTML(s, nil, false); return urls }
-func (p *Policy) HTML(s string) string { out, _ := rewriteHTML(s, p.blocked, true); return out }
+func HTMLURLs(s string) []string       { _, urls := rewriteHTML(s, nil, false, false); return urls }
+func (p *Policy) HTML(s string) string { out, _ := rewriteHTML(s, p.blocked, true, false); return out }
 
-func rewriteHTML(s string, blocked map[string]bool, clean bool) (string, []string) {
+// HTMLForDianxiaomi retains GIF tags even when their URL returned 403. The
+// Dianxiaomi exporter replaces those URLs with a final carousel image. Other
+// blocked image tags are removed in the same way as HTML.
+func (p *Policy) HTMLForDianxiaomi(s string) string {
+	out, _ := rewriteHTML(s, p.blocked, true, true)
+	return out
+}
+
+func rewriteHTML(s string, blocked map[string]bool, clean, keepBlockedGIF bool) (string, []string) {
 	z := html.NewTokenizer(strings.NewReader(s))
 	var out strings.Builder
 	var urls []string
@@ -213,7 +221,7 @@ func rewriteHTML(s string, blocked map[string]bool, clean bool) (string, []strin
 				u := Key(candidate)
 				if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") {
 					urls = append(urls, u)
-					if blocked[u] {
+					if blocked[u] && !(keepBlockedGIF && isGIFURL(u)) {
 						drop = true
 					}
 				}
@@ -232,4 +240,16 @@ func rewriteHTML(s string, blocked map[string]bool, clean bool) (string, []strin
 		}
 	}
 	return out.String(), urls
+}
+
+func isGIFURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && strings.EqualFold(pathExtension(u.Path), ".gif")
+}
+
+func pathExtension(path string) string {
+	if dot := strings.LastIndexByte(path, '.'); dot >= 0 && dot > strings.LastIndexByte(path, '/') {
+		return path[dot:]
+	}
+	return ""
 }

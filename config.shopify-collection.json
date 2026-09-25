@@ -25,6 +25,7 @@
   },
   "dianxiaomi": {
     "price_multiplier": 1,
+    "clean_product_code": true,
     "defaults": {
       "*申报价格\n(店铺币种)": "500",
       "*长（cm）": "10",

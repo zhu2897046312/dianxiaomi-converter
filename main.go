@@ -151,6 +151,8 @@ func (c Config) dianxiaomiOptions() dianxiaomi.Options {
 	o := dianxiaomi.Options{
 		RepeatImagesToTen:  c.Dianxiaomi.RepeatImagesToTen,
 		RemoveChineseInSKU: c.Dianxiaomi.RemoveChineseInSKU,
+		CleanProductCode:   c.Dianxiaomi.CleanProductCode,
+		SourceDescriptions: c.Dianxiaomi.SourceDescriptions,
 		CurrencyConversion: c.Dianxiaomi.CurrencyConversion,
 		SuggestedPrice:     c.Dianxiaomi.SuggestedPrice,
 		FallbackImages:     c.Dianxiaomi.FallbackImages,

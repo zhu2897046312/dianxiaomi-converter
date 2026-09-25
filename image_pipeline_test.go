@@ -128,3 +128,37 @@ func TestAllBlockedImagesRetainOneOnlyForDianxiaomi(t *testing.T) {
 		}
 	}
 }
+
+func TestBlockedDescriptionGIFIsReplacedOnlyForDianxiaomi(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/motion.gif" || r.URL.Path == "/blocked.jpg" {
+			w.WriteHeader(403)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	good, gif, blocked := s.URL+"/good.jpg", s.URL+"/motion.gif", s.URL+"/blocked.jpg"
+	products := []model.Product{{Handle: "p", Title: "P", Description: `<p>Text</p><img src="` + gif + `"><img src="` + blocked + `">`, Images: []model.ProductImage{{URL: good}}, Variants: []model.Variant{{SKU: "A", Options: []model.Option{{Name: "Color", Value: "Red"}}}}}}
+	cfg := defaultConfig()
+	_, err := filterProducts(context.Background(), products, &cfg, s.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(products[0].Description, gif) || strings.Contains(products[0].Description, blocked) {
+		t.Fatal(products[0].Description)
+	}
+	rows, _, err := dianxiaomi.Export(products, cfg.dianxiaomiOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rows[0][2], gif) || strings.Contains(rows[0][2], blocked) || !strings.Contains(rows[0][2], good) {
+		t.Fatal(rows[0][2])
+	}
+	h, mrows, _ := medusa.Export(products, cfg.Medusa)
+	for i, name := range h {
+		if name == "Product Description" && (strings.Contains(mrows[0][i], gif) || strings.Contains(mrows[0][i], blocked) || strings.Contains(mrows[0][i], good)) {
+			t.Fatal(mrows[0][i])
+		}
+	}
+}

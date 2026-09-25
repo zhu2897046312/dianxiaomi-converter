@@ -3,6 +3,7 @@
 	"image_filter": {"timeout_seconds": 15, "concurrency": 6},
   "dianxiaomi": {
     "price_multiplier": 1,
+    "clean_product_code": true,
     "remove_chinese_in_sku": true,
     "repeat_images_to_ten": false,
     "suggested_price": {

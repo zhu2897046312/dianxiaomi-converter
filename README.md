@@ -75,8 +75,8 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
 | 逻辑字段（Shopify 默认列） | 店小秘 |
 | --- | --- |
 | title（Title） | 产品标题、英文标题（不自动翻译） |
-| description（Body (HTML)） | 产品描述（保留 HTML） |
-| handle（Handle） | 产品货号 |
+| description（Body (HTML)） | 产品描述（保留 HTML）；GIF 图片 URL 稳定随机替换为最终轮播图中的图片 |
+| handle（Handle） | 产品货号；默认只保留英文字母、数字、点、下划线和连字符 |
 | sku（Variant SKU） | SKU 货号，保留前导零；默认删除中文汉字，其他字符保持不变 |
 | option1/2（Option1/2 Name、Value） | 两组变种属性；Color/Colour→颜色，Size→尺寸；第三组报错停止 |
 | price（Variant Price） | 申报价格换算为 CNY；建议售价写入原始价格对应的 USD 金额 |
@@ -88,7 +88,9 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
 
 缺失申报价格默认 500，长宽高各 10 cm，重量 100 g，均为临时默认值；产品素材图使用最终预览图。dianxiaomi.defaults 优先于这些默认值，sku_overrides 优先级最高，但最终仍受图片兜底、去重、文案清理及必填校验约束。素材图是否 1:1 且大于 800×800px 需人工核验。默认会把 Variant Price 当作申报价格；若它是零售价，设置 `"source_fields": {"price": ""}` 关闭或用 `price_multiplier` 换算。
 
-店小秘自动清理标题、描述正文、变种属性名/值、包装清单、敏感属性值及产地中的 Emoji（包括组合表情、肤色、旗帜、键帽及 HTML 编码表情）。保留普通文字、数字、标点、HTML 标签和链接；SKU 仍遵循独立的去中文配置。Medusa 文案保留原始 Emoji。Unicode 数据许可见 `THIRD_PARTY_NOTICES.txt`。
+店小秘自动清理标题、描述正文、变种属性名/值、包装清单、敏感属性值及产地中的 Emoji（包括组合表情、肤色、旗帜、键帽及 HTML 编码表情）。保留普通文字、数字、标点、HTML 标签和非图片链接；SKU 仍遵循独立的去中文配置。产品货号默认只保留 `A-Z a-z 0-9 . _ -`，清理发生在 SKU 覆盖之后，防止覆盖值重新带入中文、Emoji、空格、斜杠或括号；设置 `"clean_product_code": false` 可关闭。
+
+店小秘产品描述中 `img/source` 的 `src`、`data-src`、`srcset` 和 `data-srcset` 若指向 GIF，会从该商品最终输出的轮播图（最多 10 张）中稳定随机选图替换。优先选择非 GIF，替换结果对同一商品保持稳定；普通链接中的 `.gif` 不修改。即使原 GIF 返回 403，店小秘仍会用轮播图替换；其他 403 描述图片照常删除。Medusa 不执行产品货号清理、Emoji 清理或 GIF 替换，保持其原有规则。Unicode 数据许可见 `THIRD_PARTY_NOTICES.txt`。
 
 店小秘默认值集中在 `config.dianxiaomi.json`。产地默认填写 `中国-广东省`（模板要求中国产地使用 `中国-省份`，其他国家/地区直接填写名称，如 `美国`），发货时效默认填写 `9` 天。两者都可在 `dianxiaomi.defaults` 中修改，按 SKU 的 `sku_overrides` 优先级更高：
 

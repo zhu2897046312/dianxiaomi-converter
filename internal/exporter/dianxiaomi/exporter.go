@@ -24,6 +24,8 @@ const maxOptions = 2
 // Options 是店小秘目标的配置。键均为模板列名（含星号、全角括号）。
 type Options struct {
 	FallbackImages     map[string]string            `json:"-"`                     // 本次检查移除的原始商品图，仅用于所有图片被移除时的必填兜底。
+	SourceDescriptions map[string]string            `json:"-"`                     // 店小秘专用描述：保留待替换的 GIF 标签，其他 403 已清理。
+	CleanProductCode   *bool                        `json:"clean_product_code"`    // 默认开启；产品货号只保留字母、数字、点、下划线和连字符。
 	RepeatImagesToTen  *bool                        `json:"repeat_images_to_ten"`  // 旧配置兼容字段，已停用；始终只输出不同图片。
 	RemoveChineseInSKU *bool                        `json:"remove_chinese_in_sku"` // 默认开启；仅删除汉字，保留其他字符。
 	CurrencyConversion CurrencyConversion           `json:"currency_conversion"`
@@ -128,6 +130,10 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 	titles := map[string]string{}
 	for _, p := range products {
 		h := p.Handle
+		description := p.Description
+		if source, ok := opts.SourceDescriptions[h]; ok {
+			description = source
+		}
 		report.Products++
 		// 商品图优先，按 SKU 顺序追加不同的变种图，所有 SKU 共用轮播图。
 		var allImgs []string
@@ -169,7 +175,7 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 			m := map[string]string{
 				"*产品标题":    p.Title,
 				"*英文标题":    p.Title,
-				"产品描述":     p.Description,
+				"产品描述":     description,
 				"产品货号":     h,
 				"SKU货号":    sourceSKU,
 				"*变种属性名称一": optionName(opt(0).Name),
@@ -266,7 +272,14 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 					m["*产品素材图"] = previews[0]
 				}
 			}
-			cleanCopy(m)
+			if opts.CleanProductCode == nil || *opts.CleanProductCode {
+				original := m["产品货号"]
+				m["产品货号"] = cleanProductCode(original)
+				if i == 0 && original != m["产品货号"] {
+					warn(fmt.Sprintf("产品货号已去除店小秘不支持的特殊字符：%q → %q", original, m["产品货号"]))
+				}
+			}
+			cleanCopy(m, imagefilter.List(m["*轮播图"]), h)
 			if opts.RemoveChineseInSKU == nil || *opts.RemoveChineseInSKU {
 				m["SKU货号"] = removeChinese(m["SKU货号"])
 			}

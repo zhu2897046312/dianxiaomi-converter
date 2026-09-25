@@ -1,6 +1,7 @@
 package dianxiaomi
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -24,8 +25,17 @@ func TestStripEmoji(t *testing.T) {
 }
 
 func TestCopyCleaningIsDianxiaomiOnly(t *testing.T) {
-	desc := `<p>🐶狗 &amp; &#x1F431;猫</p><a href="https://example.com/🐶">🐱Link</a><img src="https://example.com/🐱.png">`
-	ps := []model.Product{{Handle: "p", Title: "🐶宠物🐱", Description: desc, Images: []model.ProductImage{{URL: "https://a/1"}}, Variants: []model.Variant{{SKU: "A😊", Options: []model.Option{{Name: "Color", Value: "🐶Red"}}}}}}
+	desc := `<p>🐶狗 &amp; &#x1F431;猫</p><a href="https://example.com/keep.gif">🐱Link</a><img src="https://example.com/motion.GIF?v=1"><source srcset='https://example.com/two.gif 1x, https://example.com/still.png 2x'><img src="https://example.com/🐱.png">`
+	var images []model.ProductImage
+	allowed := map[string]bool{}
+	for i := 1; i <= 12; i++ {
+		u := fmt.Sprintf("https://a/%d.jpg", i)
+		images = append(images, model.ProductImage{URL: u})
+		if i <= 10 {
+			allowed[u] = true
+		}
+	}
+	ps := []model.Product{{Handle: "产品 🐶 / A.B_C-1+", Title: "🐶宠物🐱", Description: desc, Images: images, Variants: []model.Variant{{SKU: "A😊", Options: []model.Option{{Name: "Color", Value: "🐶Red"}}}}}}
 	o := opts()
 	o.Overrides = map[string]map[string]string{"A😊": {"*英文标题": "🐶Pets", "包装清单": "🐱Ball"}}
 	rows, _, err := Export(ps, o)
@@ -33,12 +43,24 @@ func TestCopyCleaningIsDianxiaomiOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := rows[0]
-	if r[0] != "宠物" || r[1] != "Pets" || r[5] != "Red" || r[10] != "A😊" || r[idx("包装清单")] != "Ball" {
+	if r[0] != "宠物" || r[1] != "Pets" || r[3] != "A.B_C-1" || r[5] != "Red" || r[10] != "A😊" || r[idx("包装清单")] != "Ball" {
 		t.Fatal(r)
 	}
-	want := `<p>狗 &amp; 猫</p><a href="https://example.com/🐶">Link</a><img src="https://example.com/🐱.png">`
-	if r[2] != want {
+	if !strings.Contains(r[2], `href="https://example.com/keep.gif"`) || strings.Contains(strings.ReplaceAll(r[2], `href="https://example.com/keep.gif"`, ""), ".gif") || strings.Contains(r[2], "🐶") || strings.Contains(r[2], "🐱Link") {
 		t.Fatal(r[2])
+	}
+	for _, u := range imageAttributePattern.FindAllString(r[2], -1) {
+		if strings.Contains(u, "https://a/") {
+			found := false
+			for candidate := range allowed {
+				if strings.Contains(u, candidate) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("description used image outside final carousel", u)
+			}
+		}
 	}
 	h, mr, _ := medusa.Export(ps, medusa.DefaultOptions())
 	for i, name := range h {
@@ -56,5 +78,19 @@ func TestCopyCleaningIsDianxiaomiOnly(t *testing.T) {
 	}
 	if err := validateRequiredRows(rows); err == nil || !strings.Contains(err.Error(), "*英文标题") {
 		t.Fatal(err)
+	}
+}
+
+func TestProductCodeCleaningCanBeDisabled(t *testing.T) {
+	ps := []model.Product{{Handle: "商品 🐶 / A_B-1.2+", Title: "P", Images: []model.ProductImage{{URL: "https://a/1"}}, Variants: []model.Variant{{SKU: "A", Options: []model.Option{{Name: "Color", Value: "Red"}}}}}}
+	o := opts()
+	disabled := false
+	o.CleanProductCode = &disabled
+	rows, _, err := Export(ps, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[0][idx("产品货号")] != ps[0].Handle {
+		t.Fatal(rows[0][idx("产品货号")])
 	}
 }

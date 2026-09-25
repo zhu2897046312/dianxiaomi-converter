@@ -73,7 +73,9 @@ func filterProducts(ctx context.Context, products []model.Product, cfg *Config, 
 		}
 	}
 	cfg.Dianxiaomi.FallbackImages = map[string]string{}
+	cfg.Dianxiaomi.SourceDescriptions = map[string]string{}
 	for _, p := range products {
+		cfg.Dianxiaomi.SourceDescriptions[p.Handle] = policy.HTMLForDianxiaomi(p.Description)
 		var candidates []string
 		for _, im := range p.Images {
 			candidates = append(candidates, imagefilter.List(im.URL)...)
