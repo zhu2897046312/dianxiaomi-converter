@@ -4,18 +4,21 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"dianxiaomi-converter/internal/exporter/dianxiaomi"
 	"dianxiaomi-converter/internal/exporter/medusa"
+	"dianxiaomi-converter/internal/imagefilter"
 	"dianxiaomi-converter/internal/model"
 	"dianxiaomi-converter/internal/source/shopify"
 )
@@ -23,30 +26,39 @@ import (
 // Config 按职责分块：source_fields 描述来源 CSV 哪一列是什么；
 // dianxiaomi / medusa 各自描述目标输出缺失时填什么，互不影响。
 type Config struct {
+	OutputMedusa bool `json:"output_medusa"` // 直接拖入默认只输出店小秘；开启后同时输出 Medusa。
 	// 以下 4 个顶层键是旧版配置，仅为兼容保留，归并规则见 sourceFields 与 dianxiaomiOptions。
 	PriceColumn     string                       `json:"price_column"`
 	PriceMultiplier float64                      `json:"price_multiplier"`
 	Defaults        map[string]string            `json:"defaults"`
 	Overrides       map[string]map[string]string `json:"sku_overrides"`
 
-	SourceFields shopify.Fields     `json:"source_fields"`
-	Dianxiaomi   dianxiaomi.Options `json:"dianxiaomi"`
-	Medusa       medusa.Options     `json:"medusa"`
+	SourceFields shopify.Fields      `json:"source_fields"`
+	Dianxiaomi   dianxiaomi.Options  `json:"dianxiaomi"`
+	Medusa       medusa.Options      `json:"medusa"`
+	ImageFilter  imagefilter.Options `json:"image_filter"`
 }
 
 func defaultConfig() Config {
+	suggestedPriceEnabled := true
 	return Config{
 		PriceMultiplier: 1,
 		Defaults:        map[string]string{},
 		SourceFields:    shopify.DefaultFields(),
-		Medusa:          medusa.DefaultOptions(),
+		Dianxiaomi: dianxiaomi.Options{
+			CurrencyConversion: dianxiaomi.CurrencyConversion{
+				Enabled: true, SourceCurrency: "USD", Rates: map[string]float64{"USD": 7, "EUR": 10, "CNY": 1},
+			},
+			SuggestedPrice: dianxiaomi.SuggestedPrice{Enabled: &suggestedPriceEnabled, SourceCurrency: "USD"},
+		},
+		Medusa:      medusa.DefaultOptions(),
+		ImageFilter: imagefilter.DefaultOptions(),
 	}
 }
 
-// loadConfig 先填入默认配置再解码 JSON。encoding/json 只覆盖 JSON 中出现的键（解码到已有 map 时只增改键），
-// 所以用户只写部分 source_fields、status_map 或 defaults 时，其余项仍保留默认值，不会被清空。
-func loadConfig(path string) (Config, error) {
-	cfg := defaultConfig()
+// decodeConfig 把 JSON 覆盖到给定基础配置。encoding/json 只覆盖 JSON 中出现的键，
+// 所以店小秘专用配置无需重复 source_fields，仍可沿用按输入表头识别出的字段映射。
+func decodeConfig(cfg Config, path string) (Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, err
@@ -59,15 +71,14 @@ func loadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+func loadConfig(path string) (Config, error) { return decodeConfig(defaultConfig(), path) }
+
 //go:embed config.shopify-collection.json
 var collectionConfig []byte
 
-// configForInput 按必需表头选择内置配置；显式配置始终优先。
-// 字段映射仍由 JSON 维护，不在解析器中增加表头别名。
+// configForInput 先按必需表头选择内置字段映射，再叠加用户配置。
+// 用户配置可以只写 dianxiaomi 块，无需复制来源 CSV 的完整字段映射。
 func configForInput(b []byte, configPath string) (Config, error) {
-	if configPath != "" {
-		return loadConfig(configPath)
-	}
 	cfg := defaultConfig()
 	header, err := csv.NewReader(bytes.NewReader(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")))).Read()
 	if err != nil {
@@ -81,6 +92,9 @@ func configForInput(b []byte, configPath string) (Config, error) {
 		return cols[f.Handle] && cols[f.Title] && cols[f.SKU] && cols[f.Option1Value] && cols[f.ImageURL]
 	}
 	if matches(cfg.SourceFields) {
+		if configPath != "" {
+			return decodeConfig(cfg, configPath)
+		}
 		return cfg, nil
 	}
 	alternative := defaultConfig()
@@ -88,9 +102,35 @@ func configForInput(b []byte, configPath string) (Config, error) {
 		return cfg, fmt.Errorf("内置 Shopify 配置无效：%w", err)
 	}
 	if matches(alternative.SourceFields) {
-		return alternative, nil
+		cfg = alternative
+	}
+	if configPath != "" {
+		return decodeConfig(cfg, configPath)
 	}
 	return cfg, nil
+}
+
+// dianxiaomiConfigPath 查找可编辑的店小秘默认配置：当前目录、程序目录、程序目录的上一级。
+// 这样根目录 main.exe 和 bin/dxm-converter.exe 都能自动使用同一份配置。
+func dianxiaomiConfigPath() string {
+	const name = "config.dianxiaomi.json"
+	candidates := []string{name}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates, filepath.Join(dir, name), filepath.Join(filepath.Dir(dir), name))
+	}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		absolute, err := filepath.Abs(candidate)
+		if err != nil || seen[absolute] {
+			continue
+		}
+		seen[absolute] = true
+		if info, err := os.Stat(absolute); err == nil && !info.IsDir() {
+			return absolute
+		}
+	}
+	return ""
 }
 
 // sourceFields 把旧版 price_column 归一到 source_fields.price，之后价格只从这一个字段读取。
@@ -110,7 +150,10 @@ func (c Config) sourceFields() (shopify.Fields, []string) {
 func (c Config) dianxiaomiOptions() dianxiaomi.Options {
 	o := dianxiaomi.Options{
 		RepeatImagesToTen:  c.Dianxiaomi.RepeatImagesToTen,
+		RemoveChineseInSKU: c.Dianxiaomi.RemoveChineseInSKU,
 		CurrencyConversion: c.Dianxiaomi.CurrencyConversion,
+		SuggestedPrice:     c.Dianxiaomi.SuggestedPrice,
+		FallbackImages:     c.Dianxiaomi.FallbackImages,
 		PriceMultiplier:    c.Dianxiaomi.PriceMultiplier,
 		Defaults:           map[string]string{},
 		Overrides:          map[string]map[string]string{},
@@ -137,6 +180,9 @@ func (c Config) dianxiaomiOptions() dianxiaomi.Options {
 }
 
 func (c Config) validate() error {
+	if err := c.ImageFilter.Validate(); err != nil {
+		return err
+	}
 	if err := c.dianxiaomiOptions().Validate(); err != nil {
 		return err
 	}
@@ -156,6 +202,13 @@ var targets = map[string]target{
 
 const defaultTarget = "dianxiaomi"
 
+func (c Config) defaultTargets() []string {
+	if c.OutputMedusa {
+		return []string{"dianxiaomi", "medusa"}
+	}
+	return []string{defaultTarget}
+}
+
 func exportDianxiaomi(products []model.Product, cfg Config, template []byte) ([]byte, model.Report, error) {
 	rows, report, err := dianxiaomi.Export(products, cfg.dianxiaomiOptions())
 	if err != nil {
@@ -174,7 +227,8 @@ func exportMedusa(products []model.Product, cfg Config, _ []byte) ([]byte, model
 	return b, report, err
 }
 
-// convert 解析来源 CSV 并交给目标导出器，返回目标文件内容。template 为 nil 时使用内置店小秘模板。
+// convert is the pure parsing/export path for offline format tests.
+// The CLI runs filterProducts once before dispatching to any exporter.
 func convert(b []byte, cfg Config, targetName string, template []byte) ([]byte, model.Report, error) {
 	t, ok := targets[targetName]
 	if !ok {
@@ -189,7 +243,7 @@ func convert(b []byte, cfg Config, targetName string, template []byte) ([]byte, 
 }
 
 func targetNames() string {
-	var names []string
+	names := []string{"all"}
 	for k := range targets {
 		names = append(names, k)
 	}
@@ -246,10 +300,6 @@ func run() error {
 	config := flag.String("config", "", "JSON 配置")
 	strict := flag.Bool("strict", false, "存在待处理问题时不输出目标文件")
 	flag.Parse()
-	t, ok := targets[*targetName]
-	if !ok {
-		return fmt.Errorf("未知 -target %q，可选：%s", *targetName, targetNames())
-	}
 	args := flag.Args()
 	if len(args) > 2 {
 		return fmt.Errorf("一次拖入一个 CSV；命令行用法：tool.exe [-target medusa] 输入.csv [输出文件]")
@@ -266,6 +316,29 @@ func run() error {
 		}
 		*output = args[1]
 	}
+	// Explicit CLI target/output choices take precedence over configured defaults.
+	explicitTarget := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "target" {
+			explicitTarget = true
+		}
+	})
+	if !explicitTarget && *output != "" {
+		if strings.EqualFold(filepath.Ext(*output), ".csv") {
+			*targetName = "medusa"
+		} else {
+			*targetName = "dianxiaomi"
+		}
+	}
+	selected := []string{*targetName}
+	if *targetName == "all" {
+		if *output != "" {
+			return fmt.Errorf("-target all 不支持单个 -output；请指定 -target dianxiaomi 或 medusa")
+		}
+		selected = []string{"dianxiaomi", "medusa"}
+	} else if _, ok := targets[*targetName]; !ok {
+		return fmt.Errorf("未知 -target %q，可选：%s", *targetName, targetNames())
+	}
 	if *input == "" {
 		flag.Usage()
 		return fmt.Errorf("请把采集任务.csv 拖到本程序图标上，或运行：tool.exe 输入.csv 输出.xlsx")
@@ -273,28 +346,29 @@ func run() error {
 	if !strings.EqualFold(filepath.Ext(*input), ".csv") {
 		return fmt.Errorf("输入文件必须是 .csv")
 	}
-	if *template != "" && *targetName != "dianxiaomi" {
+	if *template != "" && *targetName != "dianxiaomi" && *targetName != "all" {
 		return fmt.Errorf("-template 仅适用于 -target dianxiaomi")
 	}
-	if *output == "" {
-		var err error
-		if *output, err = nextOutput(*input, t.suffix, t.ext); err != nil {
-			return err
-		}
-	}
-	if !strings.EqualFold(filepath.Ext(*output), t.ext) {
-		return fmt.Errorf("target %s 的输出必须使用 %s 后缀", *targetName, t.ext)
+	if *output != "" && !strings.EqualFold(filepath.Ext(*output), targets[*targetName].ext) {
+		return fmt.Errorf("target %s 的输出必须使用 %s 后缀", *targetName, targets[*targetName].ext)
 	}
 	b, e := os.ReadFile(*input)
 	if e != nil {
 		return e
 	}
-	cfg, e := configForInput(b, *config)
+	configPath := *config
+	if configPath == "" {
+		configPath = dianxiaomiConfigPath()
+	}
+	cfg, e := configForInput(b, configPath)
 	if e != nil {
 		return e
 	}
 	if e := cfg.validate(); e != nil {
 		return e
+	}
+	if !explicitTarget && *output == "" {
+		selected = cfg.defaultTargets()
 	}
 	var tpl []byte
 	if *template != "" {
@@ -303,28 +377,78 @@ func run() error {
 			return e
 		}
 	}
-	data, report, e := convert(b, cfg, *targetName, tpl)
+	fields, extra := cfg.sourceFields()
+	products, e := shopify.Parse(b, fields, extra...)
 	if e != nil {
 		return e
 	}
-	reportPath := *output + ".report.json"
-	if e = os.MkdirAll(filepath.Dir(*output), 0755); e != nil {
-		return e
-	}
-	rb, e := json.MarshalIndent(report, "", "  ")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	fmt.Println("检查图片 URL（同一链接只检查一次；过滤 HTTP 403；店小秘全 403 时保留一张原图）……")
+	imageReport, e := filterProducts(ctx, products, &cfg, nil, func(done, total int, c imagefilter.Check) {
+		if done%20 == 0 || done == total {
+			fmt.Printf("图片检查：%d/%d\n", done, total)
+		}
+	})
 	if e != nil {
 		return e
 	}
-	if e = writeNew(reportPath, rb); e != nil {
-		return e
+	fmt.Printf("图片检查完成：%d 个不同 URL；剔除 %d 个 403；%d 个检测失败（保留并记录）\n", imageReport.Checked, imageReport.Removed, imageReport.Failed)
+	var failures []string
+	for _, name := range selected {
+		t := targets[name]
+		path := *output
+		if path == "" {
+			path, e = nextOutput(*input, t.suffix, t.ext)
+			if e != nil {
+				failures = append(failures, e.Error())
+				continue
+			}
+		}
+		data, report, err := t.export(products, cfg, tpl)
+		if err != nil {
+			fmt.Printf("%s：%v\n", name, err)
+			report.Issues = append(report.Issues, model.Issue{Message: err.Error()})
+			data = nil
+		}
+		report.ImageFilter = imageReport
+		for _, check := range imageReport.Results {
+			if check.Error != "" {
+				report.Issues = append(report.Issues, model.Issue{Message: "图片检查失败，保留原链接：" + check.URL + "；" + check.Error})
+			}
+		}
+		if err := writeExport(path, data, report, *strict); err != nil {
+			failures = append(failures, name+": "+err.Error())
+		}
 	}
-	if *strict && len(report.Issues) > 0 {
+	if len(failures) > 0 {
+		return fmt.Errorf("%s", strings.Join(failures, "\n"))
+	}
+	return nil
+}
+
+func writeExport(path string, data []byte, report model.Report, strict bool) error {
+	reportPath := path + ".report.json"
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	rb, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = writeNew(reportPath, rb); err != nil {
+		return err
+	}
+	if data == nil {
+		return fmt.Errorf("转换失败，未输出目标文件，请查看报告：%s", reportPath)
+	}
+	if strict && len(report.Issues) > 0 {
 		return fmt.Errorf("发现 %d 个待处理问题，未输出目标文件，见 %s", len(report.Issues), reportPath)
 	}
-	if e = writeNew(*output, data); e != nil {
-		return e
+	if err = writeNew(path, data); err != nil {
+		return err
 	}
-	fmt.Printf("完成（%s）：%d 个商品，%d 个 SKU，%d 个待处理问题\n输出：%s\n报告：%s\n", *targetName, report.Products, report.Variants, len(report.Issues), *output, reportPath)
+	fmt.Printf("完成（%s）：%d 个商品，%d 个 SKU，%d 个待处理问题\n输出：%s\n报告：%s\n", report.Target, report.Products, report.Variants, len(report.Issues), path, reportPath)
 	return nil
 }
 

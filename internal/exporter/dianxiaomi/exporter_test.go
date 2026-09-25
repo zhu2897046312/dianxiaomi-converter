@@ -16,14 +16,17 @@ const templatePath = "../../../templates/import_created_product_popTemu.xlsx"
 
 func opts() Options { repeat := false; return Options{PriceMultiplier: 1, RepeatImagesToTen: &repeat} }
 
-func TestRepeatImagesToTen(t *testing.T) {
-	b := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "1", "Image Src": "https://a/1", "Variant Image": "https://a/2"})
-	rows, msgs := export(t, b, Options{PriceMultiplier: 1})
-	imgs := strings.Split(rows[0][idx("*轮播图")], "\n")
-	if len(imgs) != 10 || imgs[9] != "https://a/2" || !strings.Contains(strings.Join(msgs, "|"), "重复补齐") {
-		t.Fatal(imgs, msgs)
+func TestNeverRepeatImagesEvenWithLegacyConfig(t *testing.T) {
+	for _, legacy := range []*bool{nil, boolPtr(true), boolPtr(false)} {
+		b := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "1", "Image Src": "https://a/1", "Variant Image": "https://a/1"})
+		rows, msgs := export(t, b, Options{PriceMultiplier: 1, RepeatImagesToTen: legacy})
+		if rows[0][idx("*轮播图")] != "https://a/1" || strings.Contains(strings.Join(msgs, "|"), "重复补齐") {
+			t.Fatal(rows, msgs)
+		}
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 func export(t *testing.T, b []byte, o Options) ([][]string, []string) {
 	t.Helper()
@@ -52,6 +55,30 @@ func idx(name string) int {
 }
 
 var priceCol = idx("*申报价格\n(店铺币种)")
+var suggestedPriceCol = idx("建议售价（USD）")
+
+func TestSKUChineseRemoval(t *testing.T) {
+	b := tu.Shopify(
+		tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "XL2608-【太阳花】😊_A", "Option1 Value": "A"},
+		tu.Row{"Handle": "p", "Variant SKU": "XL2608-【月季】😊_A", "Option1 Value": "B"},
+		tu.Row{"Handle": "p", "Variant SKU": "中文", "Option1 Value": "C"},
+	)
+	rows, msgs := export(t, b, opts())
+	if rows[0][idx("SKU货号")] != "XL2608-【】😊_A" || rows[1][idx("SKU货号")] != "XL2608-【】😊_A" {
+		t.Fatal(rows)
+	}
+	all := strings.Join(msgs, "|")
+	if !strings.Contains(all, "SKU 货号重复") || !strings.Contains(all, "去除中文后为空") {
+		t.Fatal(msgs)
+	}
+	o := opts()
+	disabled := false
+	o.RemoveChineseInSKU = &disabled
+	rows, _ = export(t, b, o)
+	if rows[0][idx("SKU货号")] != "XL2608-【太阳花】😊_A" {
+		t.Fatal(rows[0])
+	}
+}
 
 // 2 个 SKU + 6 张图：每个 SKU 的轮播图都是 6 张，换行分隔。
 func TestCarouselSharedAcrossSKUs(t *testing.T) {
@@ -79,7 +106,7 @@ func TestCarouselSharedAcrossSKUs(t *testing.T) {
 		t.Fatal(rows)
 	}
 	// 临时默认值与素材图兜底。
-	if c[priceCol] != "500" || c[idx("*长（cm）")] != "10" || c[idx("*重量（g）")] != "100" || c[idx("*产品素材图")] != "https://a/1" {
+	if c[priceCol] != "500" || c[idx("*长（cm）")] != "10" || c[idx("*重量（g）")] != "100" || c[idx("*产品素材图")] != "https://a/1" || c[idx("发货时效（天）")] != "9" || c[idx("产地")] != "中国-广东省" {
 		t.Fatal(c)
 	}
 }
@@ -136,13 +163,13 @@ func TestCarouselFilledFromSKUs(t *testing.T) {
 func TestCurrencyConversion(t *testing.T) {
 	b := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "001", "Variant Price": "24.99"}, tu.Row{"Handle": "p", "Variant SKU": "002"})
 	for _, tc := range []struct {
-		enabled        bool
-		currency, want string
-	}{{false, "USD", "24.99"}, {true, "USD", "174.93"}, {true, "EUR", "249.90"}, {true, "GBP", "199.92"}} {
+		enabled                       bool
+		currency, want, wantSuggested string
+	}{{false, "USD", "24.99", "24.99"}, {true, "USD", "174.93", "24.99"}, {true, "EUR", "249.90", "35.70"}, {true, "GBP", "199.92", "28.56"}, {true, "CNY", "24.99", "3.57"}} {
 		o := opts()
-		o.CurrencyConversion = CurrencyConversion{Enabled: tc.enabled, SourceCurrency: tc.currency, Rates: map[string]float64{"USD": 7, "EUR": 10, "GBP": 8}}
+		o.CurrencyConversion = CurrencyConversion{Enabled: tc.enabled, SourceCurrency: tc.currency, Rates: map[string]float64{"USD": 7, "EUR": 10, "GBP": 8, "CNY": 1}}
 		rows, _ := export(t, b, o)
-		if rows[0][priceCol] != tc.want || rows[1][priceCol] != "500" {
+		if rows[0][priceCol] != tc.want || rows[0][suggestedPriceCol] != tc.wantSuggested || rows[1][priceCol] != "500" || rows[1][suggestedPriceCol] != "" {
 			t.Fatal(tc, rows)
 		}
 		o.Overrides = map[string]map[string]string{"001": {Headers[9]: "99"}}
@@ -160,10 +187,21 @@ func TestCurrencyConversion(t *testing.T) {
 	if o.Validate() == nil {
 		t.Fatal("negative rate must fail")
 	}
-	o.CurrencyConversion.Rates["USD"] = 7
+	o.CurrencyConversion.Rates = map[string]float64{"USD": 7, "EUR": 10}
 	o.PriceMultiplier = 2
 	rows, _ := export(t, b, o)
 	if rows[0][priceCol] != "349.86" {
+		t.Fatal(rows)
+	}
+	o.SuggestedPrice.SourceCurrency = "EUR"
+	rows, _ = export(t, b, o)
+	if rows[0][suggestedPriceCol] != "35.70" {
+		t.Fatal(rows)
+	}
+	disabled := false
+	o.SuggestedPrice.Enabled = &disabled
+	rows, _ = export(t, b, o)
+	if rows[0][suggestedPriceCol] != "" {
 		t.Fatal(rows)
 	}
 }
@@ -215,7 +253,7 @@ func TestWorkbookPreservesExampleAndText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := make([]string, len(Headers))
+	row := validRow(t)
 	row[0] = "=1+1 & <test>"
 	row[10] = "00123"
 	out, err := Workbook(tpl, [][]string{row})

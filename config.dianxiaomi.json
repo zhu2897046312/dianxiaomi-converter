@@ -1,0 +1,32 @@
+{
+  "output_medusa": false,
+	"image_filter": {"timeout_seconds": 15, "concurrency": 6},
+  "dianxiaomi": {
+    "price_multiplier": 1,
+    "remove_chinese_in_sku": true,
+    "repeat_images_to_ten": false,
+    "suggested_price": {
+      "enabled": true,
+      "source_currency": "USD"
+    },
+    "currency_conversion": {
+      "enabled": true,
+      "source_currency": "USD",
+      "rates": {
+        "USD": 7,
+        "EUR": 10,
+        "CNY": 1
+      }
+    },
+    "defaults": {
+      "*申报价格\n(店铺币种)": "500",
+      "*长（cm）": "10",
+      "*宽（cm）": "10",
+      "*高（cm）": "10",
+      "*重量（g）": "100",
+      "发货时效（天）": "9",
+      "产地": "中国-广东省"
+    },
+    "sku_overrides": {}
+  }
+}

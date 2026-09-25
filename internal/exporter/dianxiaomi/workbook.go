@@ -26,6 +26,9 @@ func escaped(s string) string { var b bytes.Buffer; xml.EscapeText(&b, []byte(s)
 // Workbook 用 rows 替换模板第一张工作表的数据行并返回新的 XLSX 内容。
 // 只替换数据行，其余 ZIP 条目（含“导入示例”页、样式、列宽）原样保留。
 func Workbook(template []byte, rows [][]string) ([]byte, error) {
+	if err := validateRequiredRows(rows); err != nil {
+		return nil, err
+	}
 	z, e := zip.NewReader(bytes.NewReader(template), int64(len(template)))
 	if e != nil {
 		return nil, e
@@ -78,7 +81,7 @@ func Workbook(template []byte, rows [][]string) ([]byte, error) {
 			}
 			var d strings.Builder
 			d.WriteString(data[:firstEnd+6])
-			numeric := map[int]bool{9: true, 11: true, 12: true, 13: true, 14: true, 24: true}
+			numeric := map[int]bool{9: true, 11: true, 12: true, 13: true, 14: true, 23: true, 24: true, 25: true}
 			for i, row := range rows {
 				fmt.Fprintf(&d, "<row r=\"%d\">", i+2)
 				for j, v := range row {
@@ -115,4 +118,33 @@ func Workbook(template []byte, rows [][]string) ([]byte, error) {
 		return nil, e
 	}
 	return buf.Bytes(), nil
+}
+
+// Validate at the serialization boundary: even callers using Export directly
+// cannot accidentally write a workbook whose mandatory cells are empty.
+func validateRequiredRows(rows [][]string) error {
+	var problems []string
+	for i, row := range rows {
+		if len(row) != len(Headers) {
+			return fmt.Errorf("第 %d 行列数不正确", i+2)
+		}
+		for j, name := range Headers {
+			if (strings.HasPrefix(name, "*") || name == "产地") && strings.TrimSpace(row[j]) == "" {
+				problems = append(problems, fmt.Sprintf("第 %d 行（SKU %s）第 %d 列 %s 不能为空", i+2, row[10], j+1, name))
+			}
+		}
+		for _, j := range []int{9, 11, 12, 13, 14} {
+			if strings.TrimSpace(row[j]) == "" {
+				continue
+			}
+			n, err := strconv.ParseFloat(row[j], 64)
+			if err != nil || n <= 0 || math.IsNaN(n) || math.IsInf(n, 0) {
+				problems = append(problems, fmt.Sprintf("第 %d 行第 %d 列 %s 必须为正数", i+2, j+1, Headers[j]))
+			}
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("店小秘必填字段校验失败，未生成 XLSX；请补充可用图片或修正配置后重试：\n%s", strings.Join(problems, "\n"))
+	}
+	return nil
 }

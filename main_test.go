@@ -1,8 +1,10 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/csv"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,57 @@ import (
 
 	tu "dianxiaomi-converter/internal/testutil"
 )
+
+func TestDefaultCurrencyInExportedWorkbook(t *testing.T) {
+	legacy := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "S中文-1", "Variant Price": "19.99", "Option1 Name": "Color", "Option1 Value": "Red", "Image Src": "https://a/1"})
+	collection := tu.CSV([]string{"URL handle", "Title", "SKU", "Option1 name", "Option1 value", "Product image URL", "Price"},
+		tu.Row{"URL handle": "p", "Title": "T", "SKU": "S中文-1", "Price": "19.99", "Option1 name": "Color", "Option1 value": "Red", "Product image URL": "https://a/1"})
+	for _, input := range [][]byte{legacy, collection} {
+		cfg, err := configForInput(input, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, enabled := range []bool{true, false} {
+			cfg.Dianxiaomi.CurrencyConversion.Enabled = enabled
+			out, _, err := convert(input, cfg, "dianxiaomi", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			z, err := zip.NewReader(bytes.NewReader(out), int64(len(out)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := z.Open("xl/worksheets/sheet1.xml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			xml, err := io.ReadAll(f)
+			f.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "139.93"
+			if !enabled {
+				want = "19.99"
+			}
+			if !strings.Contains(string(xml), `<c r="J2" t="n"><v>`+want+`</v></c>`) {
+				t.Fatalf("export missing price %s", want)
+			}
+			if !strings.Contains(string(xml), `<c r="K2" t="inlineStr"><is><t xml:space="preserve">S-1</t></is></c>`) {
+				t.Fatal("exported SKU still contains Chinese characters")
+			}
+			if !strings.Contains(string(xml), `<c r="X2" t="n"><v>19.99</v></c>`) {
+				t.Fatal("export missing raw USD suggested price")
+			}
+			if !strings.Contains(string(xml), `<c r="Z2" t="n"><v>9</v></c>`) {
+				t.Fatal("export missing default shipping lead time")
+			}
+			if !strings.Contains(string(xml), `<c r="AY2" t="inlineStr"><is><t xml:space="preserve">中国-广东省</t></is></c>`) {
+				t.Fatal("export missing default origin")
+			}
+		}
+	}
+}
 
 func writeConfig(t *testing.T, json string) Config {
 	t.Helper()
@@ -44,6 +97,7 @@ func readCSV(t *testing.T, b []byte) (map[string]int, [][]string) {
 func TestPartialConfigKeepsDefaults(t *testing.T) {
 	cfg := writeConfig(t, `{
 		"source_fields": {"image_url": "Product image URL"},
+		"dianxiaomi": {"remove_chinese_in_sku": false},
 		"medusa": {"status_map": {"archived": "rejected"}, "defaults": {"Shipping Profile Id": "sp_1"}}
 	}`)
 	if cfg.SourceFields.ImageURL != "Product image URL" || cfg.SourceFields.Handle != "Handle" || cfg.SourceFields.Status != "Status" {
@@ -53,6 +107,9 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	if m.PriceCurrency != "USD" || m.StatusMap["active"] != "published" || m.StatusMap["archived"] != "rejected" ||
 		m.Defaults["Product Discountable"] != "TRUE" || m.Defaults["Shipping Profile Id"] != "sp_1" {
 		t.Fatalf("%+v", m)
+	}
+	if cfg.Dianxiaomi.RemoveChineseInSKU == nil || *cfg.Dianxiaomi.RemoveChineseInSKU {
+		t.Fatal("remove_chinese_in_sku=false 未生效")
 	}
 }
 
@@ -163,7 +220,7 @@ func TestAutoOutputAvoidsExistingFiles(t *testing.T) {
 }
 
 func TestEmbeddedTemplate(t *testing.T) {
-	b := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Option1 Value": "A", "Variant SKU": "S", "Image Src": "https://a/1"})
+	b := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Option1 Name": "Color", "Option1 Value": "A", "Variant SKU": "S", "Image Src": "https://a/1"})
 	out, _, err := convert(b, defaultConfig(), "dianxiaomi", nil)
 	if err != nil || !bytes.HasPrefix(out, []byte("PK")) {
 		t.Fatal(err)
@@ -171,12 +228,14 @@ func TestEmbeddedTemplate(t *testing.T) {
 }
 
 func TestExampleConfigValid(t *testing.T) {
-	cfg, err := loadConfig("config.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = cfg.validate(); err != nil {
-		t.Fatal(err)
+	for _, path := range []string{"config.example.json", "config.dianxiaomi.json", "config.shopify-collection.json"} {
+		cfg, err := loadConfig(path)
+		if err != nil {
+			t.Fatal(path, err)
+		}
+		if err = cfg.validate(); err != nil {
+			t.Fatal(path, err)
+		}
 	}
 }
 
@@ -201,15 +260,20 @@ func TestAutoDetectCollectionConfig(t *testing.T) {
 			t.Fatal(err, report)
 		}
 	}
+	// 店小秘专用配置不重复 source_fields，叠加后仍保留自动识别的采集 CSV 字段。
+	cfg, err := configForInput(b, "config.dianxiaomi.json")
+	if err != nil || cfg.SourceFields.Handle != "URL handle" || cfg.Dianxiaomi.Defaults["发货时效（天）"] != "9" || cfg.Dianxiaomi.SuggestedPrice.SourceCurrency != "USD" {
+		t.Fatal(cfg, err)
+	}
 	// 显式配置不能被自动识别覆盖，即使文件与配置不匹配。
-	cfg, err := configForInput(b, "config.example.json")
+	cfg, err = configForInput(b, "config.example.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := convert(b, cfg, "medusa", nil); err == nil {
 		t.Fatal("explicit configuration was ignored")
 	}
-	legacy := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "001"})
+	legacy := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "001", "Option1 Name": "Color", "Option1 Value": "Red", "Image Src": "https://a/1"})
 	cfg, err = configForInput(legacy, "")
 	if err != nil || cfg.SourceFields.Handle != "Handle" {
 		t.Fatal(cfg, err)

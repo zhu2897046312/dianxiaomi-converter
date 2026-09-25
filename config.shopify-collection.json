@@ -1,4 +1,5 @@
 {
+  "output_medusa": false,
   "source_fields": {
     "handle": "URL handle",
     "title": "Title",
@@ -29,18 +30,26 @@
       "*长（cm）": "10",
       "*宽（cm）": "10",
       "*高（cm）": "10",
-      "*重量（g）": "100"
+      "*重量（g）": "100",
+      "发货时效（天）": "9",
+      "产地": "中国-广东省"
     },
     "sku_overrides": {},
+    "remove_chinese_in_sku": true,
+    "suggested_price": {
+      "enabled": true,
+      "source_currency": "USD"
+    },
     "currency_conversion": {
-      "enabled": false,
+      "enabled": true,
       "source_currency": "USD",
       "rates": {
         "USD": 7,
-        "EUR": 10
+        "EUR": 10,
+        "CNY": 1
       }
     },
-    "repeat_images_to_ten": true
+    "repeat_images_to_ten": false
   },
   "medusa": {
     "price_currency": "USD",

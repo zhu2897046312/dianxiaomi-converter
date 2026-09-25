@@ -62,8 +62,23 @@ type Issue struct {
 }
 
 type Report struct {
-	Target   string  `json:"target"`
-	Products int     `json:"products"`
-	Variants int     `json:"variants"`
-	Issues   []Issue `json:"issues"`
+	Target      string             `json:"target"`
+	Products    int                `json:"products"`
+	Variants    int                `json:"variants"`
+	Issues      []Issue            `json:"issues"`
+	ImageFilter *ImageFilterReport `json:"image_filter,omitempty"`
+}
+
+type ImageCheck struct {
+	URL     string `json:"url"`
+	Status  int    `json:"http_status"`
+	Removed bool   `json:"removed"`
+	Error   string `json:"error,omitempty"`
+}
+
+type ImageFilterReport struct {
+	Checked int          `json:"checked_unique_urls"`
+	Removed int          `json:"removed_403_urls"`
+	Failed  int          `json:"check_failures"`
+	Results []ImageCheck `json:"results"`
 }

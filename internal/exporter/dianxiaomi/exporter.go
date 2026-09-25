@@ -2,10 +2,12 @@
 package dianxiaomi
 
 import (
+	"dianxiaomi-converter/internal/imagefilter"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"dianxiaomi-converter/internal/model"
 )
@@ -21,11 +23,14 @@ const maxOptions = 2
 
 // Options 是店小秘目标的配置。键均为模板列名（含星号、全角括号）。
 type Options struct {
-	RepeatImagesToTen  *bool                        `json:"repeat_images_to_ten"` // 默认开启；无图时无法补齐。
+	FallbackImages     map[string]string            `json:"-"`                     // 本次检查移除的原始商品图，仅用于所有图片被移除时的必填兜底。
+	RepeatImagesToTen  *bool                        `json:"repeat_images_to_ten"`  // 旧配置兼容字段，已停用；始终只输出不同图片。
+	RemoveChineseInSKU *bool                        `json:"remove_chinese_in_sku"` // 默认开启；仅删除汉字，保留其他字符。
 	CurrencyConversion CurrencyConversion           `json:"currency_conversion"`
+	SuggestedPrice     SuggestedPrice               `json:"suggested_price"`
 	PriceMultiplier    float64                      `json:"price_multiplier"`
 	Defaults           map[string]string            `json:"defaults"`      // 仅填充空白单元格
-	Overrides          map[string]map[string]string `json:"sku_overrides"` // 按 SKU 强制覆盖，优先级最高
+	Overrides          map[string]map[string]string `json:"sku_overrides"` // 按来源 SKU 强制覆盖，优先级最高
 }
 
 // Rates 为每单位来源币种对应的 CNY 金额，新增币种只需添加配置。
@@ -34,6 +39,14 @@ type CurrencyConversion struct {
 	SourceCurrency string             `json:"source_currency"`
 	Rates          map[string]float64 `json:"rates"`
 }
+
+// SuggestedPrice 控制模板“建议售价（USD）”。模板没有独立币种列，最终始终输出 USD。
+type SuggestedPrice struct {
+	Enabled        *bool  `json:"enabled"` // 默认开启。
+	SourceCurrency string `json:"source_currency"`
+}
+
+func (s SuggestedPrice) enabled() bool { return s.Enabled == nil || *s.Enabled }
 
 func (c CurrencyConversion) rate() (float64, error) {
 	if !c.Enabled {
@@ -46,9 +59,35 @@ func (c CurrencyConversion) rate() (float64, error) {
 	return r, nil
 }
 
+// suggestedPriceUSD 把来源价格转换成模板固定要求的 USD 建议售价。
+// 来源就是 USD 时直接返回原值，不受申报价的 price_multiplier 影响。
+func (c CurrencyConversion) suggestedPriceUSD(n float64, configuredSource string) (float64, error) {
+	source := strings.ToUpper(strings.TrimSpace(configuredSource))
+	if source == "" {
+		source = strings.ToUpper(strings.TrimSpace(c.SourceCurrency))
+	}
+	if source == "" || source == "USD" {
+		return n, nil
+	}
+	sourceRate, sourceOK := c.Rates[source]
+	usdRate, usdOK := c.Rates["USD"]
+	if !sourceOK || sourceRate <= 0 || math.IsNaN(sourceRate) || math.IsInf(sourceRate, 0) {
+		return 0, fmt.Errorf("currency_conversion：来源币种 %q 缺少有效的 CNY 汇率（必须大于 0）", source)
+	}
+	if !usdOK || usdRate <= 0 || math.IsNaN(usdRate) || math.IsInf(usdRate, 0) {
+		return 0, fmt.Errorf("currency_conversion：生成建议售价需要有效的 USD 对 CNY 汇率（必须大于 0）")
+	}
+	return n * sourceRate / usdRate, nil
+}
+
 func (o Options) Validate() error {
 	if _, err := o.CurrencyConversion.rate(); err != nil {
 		return err
+	}
+	if o.SuggestedPrice.enabled() {
+		if _, err := o.CurrencyConversion.suggestedPriceUSD(1, o.SuggestedPrice.SourceCurrency); err != nil {
+			return err
+		}
 	}
 	if o.PriceMultiplier <= 0 || math.IsNaN(o.PriceMultiplier) || math.IsInf(o.PriceMultiplier, 0) {
 		return fmt.Errorf("price_multiplier 必须大于 0")
@@ -109,21 +148,17 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 		if len(imgs) > maxCarouselImages {
 			imgs = imgs[:maxCarouselImages]
 		}
-		if len(imgs) > 0 && len(imgs) < maxCarouselImages && (opts.RepeatImagesToTen == nil || *opts.RepeatImagesToTen) {
-			imgs = append([]string(nil), imgs...)
-			for len(imgs) < maxCarouselImages {
-				imgs = append(imgs, allImgs[len(imgs)%len(allImgs)])
-			}
-		}
 		for i, v := range p.Variants {
 			rowNo := len(out) + 2
-			sku := v.SKU
-			warn := func(s string) { report.Issues = append(report.Issues, model.Issue{Row: rowNo, SKU: sku, Message: s}) }
+			sourceSKU := v.SKU
+			warn := func(s string) {
+				report.Issues = append(report.Issues, model.Issue{Row: rowNo, SKU: sourceSKU, Message: s})
+			}
 			// 店小秘模板只有两组变种属性。第三组无处安放，丢弃会让不同 SKU 变成相同属性组合，
 			// 导入后无法区分，所以直接停止而不是静默截断。这是店小秘独有的限制，统一模型不做截断。
 			if len(v.Options) > maxOptions {
 				o := v.Options[maxOptions]
-				return nil, report, fmt.Errorf("SKU %s 有第三变种属性 %s=%s，目标模板仅支持两种，停止转换以避免丢失", sku, o.Name, o.Value)
+				return nil, report, fmt.Errorf("SKU %s 有第三变种属性 %s=%s，目标模板仅支持两种，停止转换以避免丢失", sourceSKU, o.Name, o.Value)
 			}
 			opt := func(k int) model.Option {
 				if k < len(v.Options) {
@@ -136,7 +171,7 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 				"*英文标题":    p.Title,
 				"产品描述":     p.Description,
 				"产品货号":     h,
-				"SKU货号":    sku,
+				"SKU货号":    sourceSKU,
 				"*变种属性名称一": optionName(opt(0).Name),
 				"*变种属性值一":  opt(0).Value,
 				"变种属性名称二":  optionName(opt(1).Name),
@@ -150,22 +185,9 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 				warn("不同商品使用相同标题，店小秘可能合并，请修改标题")
 			}
 			titles[p.Title] = h
-			if sku == "" {
-				warn("SKU 货号缺失")
-			} else if seen[sku] {
-				warn("SKU 货号重复")
-			}
-			seen[sku] = true
 			// 超限只在商品第一个 SKU 上报一次，避免同一商品的每个 SKU 重复刷同一条警告。
 			if i == 0 && len(allImgs) > maxCarouselImages {
 				warn(fmt.Sprintf("商品共 %d 张图片，轮播图仅保留前 %d 张", len(allImgs), maxCarouselImages))
-			}
-			if i == 0 && len(allImgs) < maxCarouselImages {
-				if len(imgs) == maxCarouselImages {
-					warn(fmt.Sprintf("商品图和 SKU 图去重后仅 %d 张，已重复补齐至 10 个轮播图链接", len(allImgs)))
-				} else {
-					warn(fmt.Sprintf("商品图和 SKU 图去重后仅 %d 张，轮播图不足 10 张", len(allImgs)))
-				}
 			}
 			if len(imgs) > 0 {
 				m["*轮播图"] = strings.Join(imgs, "\n")
@@ -181,9 +203,19 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 				} else {
 					amount := n * opts.PriceMultiplier * rate
 					if math.IsInf(amount, 0) || math.IsNaN(amount) {
-						return nil, report, fmt.Errorf("SKU %s 换算后价格超出有效范围", sku)
+						return nil, report, fmt.Errorf("SKU %s 换算后价格超出有效范围", sourceSKU)
 					}
 					m[Headers[9]] = strconv.FormatFloat(amount, 'f', 2, 64)
+					if opts.SuggestedPrice.enabled() {
+						suggested, priceErr := opts.CurrencyConversion.suggestedPriceUSD(n, opts.SuggestedPrice.SourceCurrency)
+						if priceErr != nil {
+							return nil, report, priceErr
+						}
+						if math.IsInf(suggested, 0) || math.IsNaN(suggested) {
+							return nil, report, fmt.Errorf("SKU %s 建议售价换算后超出有效范围", sourceSKU)
+						}
+						m["建议售价（USD）"] = strconv.FormatFloat(suggested, 'f', 2, 64)
+					}
 				}
 			}
 			for k, val := range opts.Defaults {
@@ -195,20 +227,58 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 			for k, val := range map[string]string{
 				Headers[9]: "500", Headers[11]: "10", Headers[12]: "10",
 				Headers[13]: "10", Headers[14]: "100",
+				"发货时效（天）": "9", "产地": "中国-广东省",
 			} {
 				if m[k] == "" {
 					m[k] = val
 				}
 			}
-			// 第一版不做图片内容判断：素材图直接取预览图（已包含“商品首图”兜底）。
-			if m["*产品素材图"] == "" {
-				m["*产品素材图"] = m["预览图"]
-			}
-			for k, val := range opts.Overrides[sku] {
+			for k, val := range opts.Overrides[sourceSKU] {
 				m[k] = val
 			}
+			// Defaults and overrides must not restore duplicate carousel entries either.
+			finalImages := imagefilter.List(m["*轮播图"])
+			if len(finalImages) > maxCarouselImages {
+				finalImages = finalImages[:maxCarouselImages]
+			}
+			m["*轮播图"] = strings.Join(finalImages, "\n")
+			// All transformations and overrides run before the final required-field guard.
+			// In particular, a filtered 403 override must not erase the material fallback.
+			if strings.TrimSpace(m["预览图"]) == "" && len(finalImages) > 0 {
+				m["预览图"] = finalImages[0]
+			}
+			if m["*轮播图"] == "" {
+				fallback := imagefilter.List(strings.Join([]string{m["预览图"], m["*产品素材图"], strings.Join(imgs, "\n")}, "\n"))
+				if len(fallback) == 0 && opts.FallbackImages[h] != "" {
+					fallback = []string{opts.FallbackImages[h]}
+					warn("图片全部为 403，为保证必填图片列保留一个原链接，店小秘仍可能抓取失败：" + fallback[0])
+				}
+				if len(fallback) > maxCarouselImages {
+					fallback = fallback[:maxCarouselImages]
+				}
+				m["*轮播图"] = strings.Join(fallback, "\n")
+				if strings.TrimSpace(m["预览图"]) == "" && len(fallback) > 0 {
+					m["预览图"] = fallback[0]
+				}
+			}
+			if strings.TrimSpace(m["*产品素材图"]) == "" {
+				if previews := imagefilter.List(m["预览图"]); len(previews) > 0 {
+					m["*产品素材图"] = previews[0]
+				}
+			}
+			cleanCopy(m)
+			if opts.RemoveChineseInSKU == nil || *opts.RemoveChineseInSKU {
+				m["SKU货号"] = removeChinese(m["SKU货号"])
+			}
+			finalSKU := m["SKU货号"]
+			if finalSKU == "" {
+				warn("SKU 货号缺失或去除中文后为空")
+			} else if seen[finalSKU] {
+				warn("SKU 货号重复")
+			}
+			seen[finalSKU] = true
 			for _, k := range Headers {
-				if strings.HasPrefix(k, "*") && m[k] == "" {
+				if (strings.HasPrefix(k, "*") || k == "产地") && strings.TrimSpace(m[k]) == "" {
 					warn("缺少必填字段：" + k)
 				}
 			}
@@ -230,7 +300,7 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 			for i, k := range Headers {
 				values[i] = m[k]
 				if len([]rune(values[i])) > 32767 {
-					return nil, report, fmt.Errorf("SKU %s 字段 %s 超过 Excel 单元格长度限制", sku, k)
+					return nil, report, fmt.Errorf("SKU %s 字段 %s 超过 Excel 单元格长度限制", sourceSKU, k)
 				}
 			}
 			out = append(out, values)
@@ -238,6 +308,15 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 	}
 	report.Variants = len(out)
 	return out, report, nil
+}
+
+func removeChinese(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Han, r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func optionName(s string) string {
