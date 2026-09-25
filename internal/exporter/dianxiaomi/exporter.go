@@ -27,7 +27,7 @@ type Options struct {
 	SourceDescriptions map[string]string            `json:"-"`                     // 店小秘专用描述：保留待替换的 GIF 标签，其他 403 已清理。
 	CleanProductCode   *bool                        `json:"clean_product_code"`    // 默认开启；产品货号只保留字母、数字、点、下划线和连字符。
 	RepeatImagesToTen  *bool                        `json:"repeat_images_to_ten"`  // 旧配置兼容字段，已停用；始终只输出不同图片。
-	RemoveChineseInSKU *bool                        `json:"remove_chinese_in_sku"` // 默认开启；仅删除汉字，保留其他字符。
+	RemoveChineseInSKU *bool                        `json:"remove_chinese_in_sku"` // 默认开启；控制汉字清理。Emoji 始终删除。
 	CurrencyConversion CurrencyConversion           `json:"currency_conversion"`
 	SuggestedPrice     SuggestedPrice               `json:"suggested_price"`
 	PriceMultiplier    float64                      `json:"price_multiplier"`
@@ -280,12 +280,14 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 				}
 			}
 			cleanCopy(m, imagefilter.List(m["*轮播图"]), h)
+			// 店小秘 SKU 不支持 Emoji。这是目标平台硬性规则，不受“去中文”配置影响。
+			m["SKU货号"] = stripEmoji(m["SKU货号"])
 			if opts.RemoveChineseInSKU == nil || *opts.RemoveChineseInSKU {
 				m["SKU货号"] = removeChinese(m["SKU货号"])
 			}
 			finalSKU := m["SKU货号"]
 			if finalSKU == "" {
-				warn("SKU 货号缺失或去除中文后为空")
+				warn("SKU 货号缺失或清理中文、Emoji 后为空")
 			} else if seen[finalSKU] {
 				warn("SKU 货号重复")
 			}

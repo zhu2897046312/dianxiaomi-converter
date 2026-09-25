@@ -57,26 +57,34 @@ func idx(name string) int {
 var priceCol = idx("*申报价格\n(店铺币种)")
 var suggestedPriceCol = idx("建议售价（USD）")
 
-func TestSKUChineseRemoval(t *testing.T) {
+func TestSKUChineseAndEmojiRemoval(t *testing.T) {
 	b := tu.Shopify(
 		tu.Row{"Handle": "p", "Title": "T", "Variant SKU": "XL2608-【太阳花】😊_A", "Option1 Value": "A"},
 		tu.Row{"Handle": "p", "Variant SKU": "XL2608-【月季】😊_A", "Option1 Value": "B"},
 		tu.Row{"Handle": "p", "Variant SKU": "中文", "Option1 Value": "C"},
 	)
 	rows, msgs := export(t, b, opts())
-	if rows[0][idx("SKU货号")] != "XL2608-【】😊_A" || rows[1][idx("SKU货号")] != "XL2608-【】😊_A" {
+	if rows[0][idx("SKU货号")] != "XL2608-【】_A" || rows[1][idx("SKU货号")] != "XL2608-【】_A" {
 		t.Fatal(rows)
 	}
 	all := strings.Join(msgs, "|")
-	if !strings.Contains(all, "SKU 货号重复") || !strings.Contains(all, "去除中文后为空") {
+	if !strings.Contains(all, "SKU 货号重复") || !strings.Contains(all, "清理中文、Emoji 后为空") {
 		t.Fatal(msgs)
 	}
 	o := opts()
 	disabled := false
 	o.RemoveChineseInSKU = &disabled
 	rows, _ = export(t, b, o)
-	if rows[0][idx("SKU货号")] != "XL2608-【太阳花】😊_A" {
+	if rows[0][idx("SKU货号")] != "XL2608-【太阳花】_A" {
 		t.Fatal(rows[0])
+	}
+
+	// SKU 覆盖也不能重新带入 Emoji；清理必须发生在覆盖之后。
+	o = opts()
+	o.Overrides = map[string]map[string]string{"XL2608-【太阳花】😊_A": {"SKU货号": "OV🐶-A"}}
+	rows, _ = export(t, b, o)
+	if rows[0][idx("SKU货号")] != "OV-A" {
+		t.Fatal(rows[0][idx("SKU货号")])
 	}
 }
 

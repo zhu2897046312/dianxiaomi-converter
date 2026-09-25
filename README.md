@@ -44,7 +44,7 @@ go build -o bin/dxm-converter.exe .
 | 轮播图 | 商品图优先，再补不同的 SKU 图；去空、去重、最多 10 张；只有 1 张就只填 1 张 | `repeat_images_to_ten` 已停用 |
 | 详情 GIF | `img/source` 中的 GIF 从最终轮播图最多 10 张里稳定随机替换，优先使用非 GIF；普通链接不改 | 店小秘专用规则 |
 | 产品货号 | 只保留英文字母、数字、点、下划线和连字符 | `dianxiaomi.clean_product_code`，默认 `true` |
-| SKU 货号 | 只删除中文汉字；数字、英文、空格、标点、括号和 Emoji 保留 | `dianxiaomi.remove_chinese_in_sku`，默认 `true` |
+| SKU 货号 | Emoji 始终删除；中文汉字默认删除；数字、英文、空格、普通标点和括号保留 | `dianxiaomi.remove_chinese_in_sku` 只控制中文清理，默认 `true` |
 | 店小秘文案 | 标题、描述正文、规格名/值等删除 Emoji；保留中文、英文、数字、普通标点、HTML 和普通链接 | 固定规则；Medusa 保留原文 |
 | 申报价格 | 来源价 × `price_multiplier` × CNY 汇率；默认把来源价视为 USD，按 `USD × 7` 输出 CNY | `dianxiaomi.currency_conversion`、`price_multiplier` |
 | 建议售价 | 默认把爬取价格直接填入“建议售价（USD）”，不乘 `price_multiplier` | `dianxiaomi.suggested_price.source_currency` 支持 USD、EUR、CNY 或 rates 中新增币种 |
@@ -110,7 +110,7 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
 
 缺失申报价格默认 500，长宽高各 10 cm，重量 100 g，均为临时默认值；产品素材图使用最终预览图。dianxiaomi.defaults 优先于这些默认值，sku_overrides 优先级最高，但最终仍受图片兜底、去重、文案清理及必填校验约束。素材图是否 1:1 且大于 800×800px 需人工核验。默认会把 Variant Price 当作申报价格；若它是零售价，设置 `"source_fields": {"price": ""}` 关闭或用 `price_multiplier` 换算。
 
-店小秘自动清理标题、描述正文、变种属性名/值、包装清单、敏感属性值及产地中的 Emoji（包括组合表情、肤色、旗帜、键帽及 HTML 编码表情）。保留普通文字、数字、标点、HTML 标签和非图片链接；SKU 仍遵循独立的去中文配置。产品货号默认只保留 `A-Z a-z 0-9 . _ -`，清理发生在 SKU 覆盖之后，防止覆盖值重新带入中文、Emoji、空格、斜杠或括号；设置 `"clean_product_code": false` 可关闭。
+店小秘自动清理标题、描述正文、变种属性名/值、包装清单、敏感属性值、产地和 SKU 货号中的 Emoji（包括组合表情、肤色、旗帜、键帽及 HTML 编码表情）。文案保留普通文字、数字、标点、HTML 标签和非图片链接；SKU 的 Emoji 清理是店小秘固定规则，`remove_chinese_in_sku` 只决定是否额外删除汉字。产品货号默认只保留 `A-Z a-z 0-9 . _ -`，清理发生在 SKU 覆盖之后，防止覆盖值重新带入中文、Emoji、空格、斜杠或括号；设置 `"clean_product_code": false` 可关闭。
 
 店小秘产品描述中 `img/source` 的 `src`、`data-src`、`srcset` 和 `data-srcset` 若指向 GIF，会从该商品最终输出的轮播图（最多 10 张）中稳定随机选图替换。优先选择非 GIF，替换结果对同一商品保持稳定；普通链接中的 `.gif` 不修改。即使原 GIF 返回 403，店小秘仍会用轮播图替换；其他 403 描述图片照常删除。Medusa 不执行产品货号清理、Emoji 清理或 GIF 替换，保持其原有规则。Unicode 数据许可见 `THIRD_PARTY_NOTICES.txt`。
 
@@ -169,7 +169,7 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
 
   `repeat_images_to_ten` 已停用，保留键名仅用于兼容旧配置；无论旧配置为 `true` 还是 `false`，现在始终只保留实际不同图片，不重复补齐。完全无图时会报告缺图并阻止生成 XLSX；全 403 时按上述规则保留一个原链接。SKU 显式图片覆盖也必须经过 403 过滤及轮播去重。
 
-  `remove_chinese_in_sku` 默认为 `true`：导出前删除 SKU 中的中文汉字，数字、英文字母、空格、连字符、括号、Emoji 等其他字符保持不变。设置为 `false` 可完全保留来源 SKU。清理后为空或多个 SKU 变成相同值时会写入问题报告。
+  店小秘 SKU 货号始终删除 Emoji，因为目标平台不支持 Emoji。`remove_chinese_in_sku` 默认为 `true`，用于额外删除 SKU 中的中文汉字；数字、英文字母、空格、普通标点和括号保持不变。设置为 `false` 只会保留中文，仍会删除 Emoji。所有清理都在 `sku_overrides` 之后执行，覆盖值也不能重新带入 Emoji。清理后为空或多个 SKU 变成相同值时会写入问题报告。Medusa SKU 保留原值。
 
   `suggested_price` 单独控制模板的“建议售价（USD）”。默认开启且 `source_currency` 为 `USD`，因此直接写入爬取价格；可改为 `EUR` 或 `CNY`，程序会使用 `currency_conversion.rates` 交叉换算成 USD。设置 `enabled` 为 `false` 可不填写建议售价：
 

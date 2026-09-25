@@ -43,7 +43,7 @@ func TestCopyCleaningIsDianxiaomiOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := rows[0]
-	if r[0] != "宠物" || r[1] != "Pets" || r[3] != "A.B_C-1" || r[5] != "Red" || r[10] != "A😊" || r[idx("包装清单")] != "Ball" {
+	if r[0] != "宠物" || r[1] != "Pets" || r[3] != "A.B_C-1" || r[5] != "Red" || r[10] != "A" || r[idx("包装清单")] != "Ball" {
 		t.Fatal(r)
 	}
 	if !strings.Contains(r[2], `href="https://example.com/keep.gif"`) || strings.Contains(strings.ReplaceAll(r[2], `href="https://example.com/keep.gif"`, ""), ".gif") || strings.Contains(r[2], "🐶") || strings.Contains(r[2], "🐱Link") {
@@ -68,6 +68,9 @@ func TestCopyCleaningIsDianxiaomiOnly(t *testing.T) {
 			t.Fatal(mr[0][i])
 		}
 		if name == "Product Title" && mr[0][i] != "🐶宠物🐱" {
+			t.Fatal(mr[0][i])
+		}
+		if name == "Variant SKU" && mr[0][i] != "A😊" {
 			t.Fatal(mr[0][i])
 		}
 	}
