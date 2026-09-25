@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"dianxiaomi-converter/internal/downloader"
 	"dianxiaomi-converter/internal/exporter/dianxiaomi"
 	"dianxiaomi-converter/internal/exporter/medusa"
 	"dianxiaomi-converter/internal/imagefilter"
@@ -37,6 +38,7 @@ type Config struct {
 	Dianxiaomi   dianxiaomi.Options  `json:"dianxiaomi"`
 	Medusa       medusa.Options      `json:"medusa"`
 	ImageFilter  imagefilter.Options `json:"image_filter"`
+	Download403  downloader.Config   `json:"download_403"`
 }
 
 func defaultConfig() Config {
@@ -53,6 +55,7 @@ func defaultConfig() Config {
 		},
 		Medusa:      medusa.DefaultOptions(),
 		ImageFilter: imagefilter.DefaultOptions(),
+		Download403: downloader.DefaultConfig(),
 	}
 }
 
@@ -185,6 +188,9 @@ func (c Config) validate() error {
 	if err := c.ImageFilter.Validate(); err != nil {
 		return err
 	}
+	if err := c.Download403.Validate(); err != nil {
+		return fmt.Errorf("download_403: %w", err)
+	}
 	if err := c.dianxiaomiOptions().Validate(); err != nil {
 		return err
 	}
@@ -294,6 +300,24 @@ func nextOutput(input, suffix, ext string) (string, error) {
 	}
 }
 
+// nextResultDir keeps every drag-and-drop run together without overwriting an earlier run.
+func nextResultDir(input string) (string, error) {
+	base := strings.TrimSuffix(input, filepath.Ext(input)) + "_转换结果"
+	for i := 0; ; i++ {
+		path := base
+		if i > 0 {
+			path = fmt.Sprintf("%s_%d", base, i)
+		}
+		_, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+}
+
 func run() error {
 	input := flag.String("input", "", "采集 CSV（UTF-8）")
 	targetName := flag.String("target", defaultTarget, "输出目标："+targetNames())
@@ -386,6 +410,16 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	resultDir := ""
+	if *output == "" {
+		resultDir, e = nextResultDir(*input)
+		if e != nil {
+			return e
+		}
+		if e = os.MkdirAll(resultDir, 0755); e != nil {
+			return e
+		}
+	}
 	fmt.Println("检查图片 URL（同一链接只检查一次；过滤 HTTP 403；店小秘全 403 时保留一张原图）……")
 	imageReport, e := filterProducts(ctx, products, &cfg, nil, func(done, total int, c imagefilter.Check) {
 		if done%20 == 0 || done == total {
@@ -396,16 +430,24 @@ func run() error {
 		return e
 	}
 	fmt.Printf("图片检查完成：%d 个不同 URL；剔除 %d 个 403；%d 个检测失败（保留并记录）\n", imageReport.Checked, imageReport.Removed, imageReport.Failed)
+	downloadIssue := ""
+	if cfg.Download403.Enabled && imageReport.Removed > 0 {
+		downloadDir := filepath.Join(resultDir, "403-images")
+		if resultDir == "" {
+			downloadDir = strings.TrimSuffix(*output, filepath.Ext(*output)) + "_403-images"
+		}
+		if err := downloadConfirmed403(ctx, imageReport, downloadDir, configPath); err != nil {
+			downloadIssue = "403 图片补下载未全部完成：" + err.Error()
+			fmt.Fprintln(os.Stderr, downloadIssue)
+		}
+	}
 	var failures []string
 	for _, name := range selected {
 		t := targets[name]
 		path := *output
 		if path == "" {
-			path, e = nextOutput(*input, t.suffix, t.ext)
-			if e != nil {
-				failures = append(failures, e.Error())
-				continue
-			}
+			base := strings.TrimSuffix(filepath.Base(*input), filepath.Ext(*input))
+			path = filepath.Join(resultDir, base+t.suffix+t.ext)
 		}
 		data, report, err := t.export(products, cfg, tpl)
 		if err != nil {
@@ -414,6 +456,9 @@ func run() error {
 			data = nil
 		}
 		report.ImageFilter = imageReport
+		if downloadIssue != "" {
+			report.Issues = append(report.Issues, model.Issue{Message: downloadIssue})
+		}
 		for _, check := range imageReport.Results {
 			if check.Error != "" {
 				report.Issues = append(report.Issues, model.Issue{Message: "图片检查失败，保留原链接：" + check.URL + "；" + check.Error})
@@ -421,6 +466,11 @@ func run() error {
 		}
 		if err := writeExport(path, data, report, *strict); err != nil {
 			failures = append(failures, name+": "+err.Error())
+		}
+	}
+	if resultDir != "" {
+		if err := writeConversionSummary(resultDir, imageReport, cfg.Download403.Enabled, downloadIssue, selected); err != nil {
+			failures = append(failures, err.Error())
 		}
 	}
 	if len(failures) > 0 {

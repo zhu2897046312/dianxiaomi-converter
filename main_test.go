@@ -219,6 +219,21 @@ func TestAutoOutputAvoidsExistingFiles(t *testing.T) {
 	}
 }
 
+func TestResultDirectoryAvoidsExistingRuns(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "shopify.csv")
+	first, err := nextResultDir(input)
+	if err != nil || !strings.HasSuffix(first, "shopify_转换结果") {
+		t.Fatal(first, err)
+	}
+	if err := os.Mkdir(first, 0755); err != nil {
+		t.Fatal(err)
+	}
+	second, err := nextResultDir(input)
+	if err != nil || !strings.HasSuffix(second, "shopify_转换结果_1") {
+		t.Fatal(second, err)
+	}
+}
+
 func TestEmbeddedTemplate(t *testing.T) {
 	b := tu.Shopify(tu.Row{"Handle": "p", "Title": "T", "Option1 Name": "Color", "Option1 Value": "A", "Variant SKU": "S", "Image Src": "https://a/1"})
 	out, _, err := convert(b, defaultConfig(), "dianxiaomi", nil)

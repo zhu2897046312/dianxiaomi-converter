@@ -1,7 +1,7 @@
 # Shopify CSV → 多目标格式转换
 > Open-source companion utility for the [Sweet Potato Head Product Collection Tool](https://www.sweetphotohead.com/tools/collection-jobs).
 
-Go 命令行项目（源码构建需要 Go 1.26+，EXE 无需安装 Go）。输入为 Shopify 官方商品导出 UTF-8 CSV（列名可通过配置适配其他来源），当前支持两个输出目标：
+Go 命令行项目（源码构建需要 Go 1.27.1+，EXE 无需安装 Go）。输入为 Shopify 官方商品导出 UTF-8 CSV（列名可通过配置适配其他来源），当前支持两个输出目标：
 
 | target | 输出 | 说明 |
 | --- | --- | --- |
@@ -9,23 +9,40 @@ Go 命令行项目（源码构建需要 Go 1.26+，EXE 无需安装 Go）。输�
 | `dianxiaomi`（默认/直接拖入） | 店小秘 Temu 模板 XLSX | 使用内置 `import_created_product_popTemu.xlsx`，保留列顺序、列宽及填写示例页 |
 | `medusa` | Medusa Product Import CSV | 字段顺序与 `product-import-template` 一致，Option / 图片列按数据动态扩展 |
 
-转换前联网检查图片，不执行 CSV 或 HTML 内容。仅检查 HTTP 响应状态，不下载图片文件，也不需要另外运行 image403-downloader。这是本地格式转换，不代表已通过目标平台在线导入验证。
+转换器按完整 URL 去重并检查图片。确认普通 GET 返回 HTTP 403 后，从模板内容中按规则过滤该 URL，同时自动调用同目录的 `image403-downloader.exe`，使用 Chrome 或 Edge 会话补下载到本地。下载器仍可独立接收 CSV、`urls.txt` 或单个 URL。工具不会上传图片或把本地路径写入店小秘模板。
 
 ## 运行（PowerShell）
 
 ```powershell
 go test ./...
-go build -o bin/dxm-converter.exe .
+go build -o bin/dianxiaomi-converter.exe .
+go build -o bin/image403-downloader.exe ./cmd/image403-downloader
 # 默认：只生成店小秘（也可直接把 CSV 拖到 exe 上）
-.\bin\dxm-converter.exe "采集任务-412-20260923.csv"
+.\bin\dianxiaomi-converter.exe "采集任务-412-20260923.csv"
 # 只生成店小秘
-.\bin\dxm-converter.exe -target dianxiaomi "采集任务-412-20260923.csv"
+.\bin\dianxiaomi-converter.exe -target dianxiaomi "采集任务-412-20260923.csv"
 # Medusa
-.\bin\dxm-converter.exe -target medusa "采集任务-412-20260923.csv"
-.\bin\dxm-converter.exe -target medusa -input shopify.csv -output products.csv
+.\bin\dianxiaomi-converter.exe -target medusa "采集任务-412-20260923.csv"
+.\bin\dianxiaomi-converter.exe -target medusa -input shopify.csv -output products.csv
 ```
 
-默认在 CSV 旁生成 `<名称>_店小秘.xlsx`。在 `config.dianxiaomi.json` 顶层设置 `"output_medusa": true` 可同时生成 `<名称>_medusa.csv`；默认 `false`。命令行显式 `-target dianxiaomi / medusa / all` 优先于此配置。同名已存在时依次使用 `_1`、`_2`……，从不覆盖已有文件。每种输出生成 `<输出>.report.json` 问题报告（含 `target` 和 `image_filter`）。`-strict` 对存在问题的目标只生成报告并返回失败。单独指定目标时输出后缀必须匹配（`.xlsx` / `.csv`）。显式输出文件但未指定目标时，按 `.xlsx` / `.csv` 推断；`-target all` 不能搭配单个 `-output`。启用两个目标时，某一目标不支持数据会报告失败并继续生成另一目标。
+两个 EXE 必须放在同一目录。直接拖入时在 CSV 旁生成 `<名称>_转换结果` 目录；已有同名目录时依次使用 `_1`、`_2`，从不覆盖旧结果：
+
+```text
+<名称>_转换结果/
+├─ <名称>_店小秘.xlsx
+├─ <名称>_店小秘.xlsx.report.json
+├─ <名称>_medusa.csv                 # output_medusa=true 时生成
+├─ conversion-report.json
+└─ 403-images/                       # 本批确认存在 403 时生成
+   ├─ confirmed-403-urls.txt
+   ├─ report.csv
+   ├─ summary.json
+   ├─ failed_urls.txt
+   └─ images/*.png
+```
+
+在 `config.dianxiaomi.json` 顶层设置 `"output_medusa": true` 可同时生成 Medusa；默认 `false`。命令行显式 `-target dianxiaomi / medusa / all` 优先于此配置。每种输出生成 `<输出>.report.json`，整批另有 `conversion-report.json`。`-strict` 对存在问题的目标只生成报告并返回失败。显式 `-output` 时按指定路径输出，并把图片放在 `<输出文件名>_403-images`；`-target all` 不能搭配单个 `-output`。启用两个目标时，某一目标不支持数据会报告失败并继续生成另一目标。
 
 输入必须是 UTF-8（可带 BOM）。Excel 另存的 GBK CSV 会明确报错，请另存为“CSV UTF-8”。
 
@@ -37,9 +54,10 @@ go build -o bin/dxm-converter.exe .
 
 | 项目 | 默认行为 | 可配置项 |
 | --- | --- | --- |
-| 入口与输出 | 把一个 Shopify/采集 CSV 拖到 EXE，只生成店小秘 XLSX；不覆盖已有文件 | 顶层 `output_medusa: true` 同时生成 Medusa；也可使用 `-target` |
+| 入口与输出 | 把一个 Shopify/采集 CSV 拖到 `dianxiaomi-converter.exe`，生成独立结果目录；默认只输出店小秘 XLSX | 顶层 `output_medusa: true` 同时生成 Medusa；也可使用 `-target` |
 | 店小秘模板 | 使用内置 `templates/import_created_product_popTemu.xlsx`，每次生成前核对表头、列数和顺序 | `-template` 可指定同结构模板 |
 | 图片检测 | 完整 URL 去重后只检查一次；仅确认 HTTP 403 才过滤，超时或其他状态保留并报告 | `image_filter.timeout_seconds`、`image_filter.concurrency` |
+| 403 补下载 | 主程序把已确认 403 的清单交给同目录下载器，不重复检测；浏览器下载后默认真正转码为 PNG | `download_403.enabled`、`download_403.output_format`、浏览器和超时配置 |
 | 全部图片 403 | 店小秘保留来源顺序第一张原链接，补齐轮播图、预览图和产品素材图；不会重复填满 10 张 | 固定规则；报告会提示该图仍可能被店小秘拒绝 |
 | 轮播图 | 商品图优先，再补不同的 SKU 图；去空、去重、最多 10 张；只有 1 张就只填 1 张 | `repeat_images_to_ten` 已停用 |
 | 详情 GIF | `img/source` 中的 GIF 从最终轮播图最多 10 张里稳定随机替换，优先使用非 GIF；普通链接不改 | 店小秘专用规则 |
@@ -62,6 +80,7 @@ go build -o bin/dxm-converter.exe .
 - 店小秘在过滤、默认配置、SKU 覆盖完成后补齐图片：预览图取有效轮播首图，素材图取最终预览图；空轮播可使用同商品剩余图片。若商品/SKU 图片全部为 403 且没有可用配置图片，保留按来源顺序第一张原图，各 SKU 的轮播、预览和素材图可共用这一个链接。不会重复填满 10 张，也不会恢复非 GIF 的 403 描述图片；403 GIF 按详情替换规则处理。报告会提示兜底原图仍可能被店小秘拒绝抓取。Medusa 仍删除全部 403 图片。
 - 店小秘所有星号必填列及产地在写入 XLSX 前强制校验，申报价、尺寸和重量须为正数。源文件完全没有图片、清理 Emoji 后标题/规格为空、配置覆盖清空必填字段等无法补齐的情况，只生成错误报告，不生成无效 XLSX，无需开启 `-strict`。描述图片不会自动充当轮播/素材图。
 - 报告 `image_filter.results` 记录每个 URL 的状态、是否从共享数据中移除及错误；店小秘保留原图的例外另在 `issues` 中记录。状态以本电脑当次请求为准，可能与店小秘服务器请求结果不同。
+- 已确认 403 的 URL 写入 `403-images/confirmed-403-urls.txt`，随后由独立下载器使用 Chrome/Edge 补下载。主程序等待下载器结束再生成模板。某张图补下载失败时仍生成转换文件，并把失败写入目标报告和 `403-images/report.csv`；本地图片用于后续人工上传，不会替换成无效的本地路径。
 
 可在 `config.dianxiaomi.json` 或显式配置中调整检查超时和并发：
 
@@ -69,7 +88,19 @@ go build -o bin/dxm-converter.exe .
 {"image_filter": {"timeout_seconds": 15, "concurrency": 6}}
 ```
 
-超时允许 1–120 秒，并发允许 1–16。只有检查 HTTP 状态时联网，不调用浏览器补下载，也不上传文件。
+超时允许 1–120 秒，并发允许 1–16。普通检查不读取或保存图片正文；只有确认 403 后才调用浏览器补下载。
+
+## 独立使用 403 下载器
+
+`image403-downloader.exe` 是同一仓库的第二个入口，可以继续单独拖入 Shopify/采集 CSV 或 `urls.txt`。独立模式先检查 URL，只对确认返回 403 的图片启动浏览器：
+
+```powershell
+.\bin\image403-downloader.exe shopify.csv
+.\bin\image403-downloader.exe urls.txt
+.\bin\image403-downloader.exe -url "https://example.com/image.jpg"
+```
+
+CSV 支持 `Image Src / Variant Image / Body (HTML)` 和 `Product image URL / Variant image URL / Description`。下载结果按 URL 的 SHA-256 命名，查询参数会参与去重和命名。默认输出 PNG；GIF 使用第一帧，JPEG/PNG/WebP 会真实解码后重新编码，不能只改扩展名。主转换器使用内部参数 `-confirmed-403` 将已检测清单交给下载器，用户通常无需手动使用该参数。
 
 ## 架构
 
@@ -77,6 +108,7 @@ go build -o bin/dxm-converter.exe .
 Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
              ─→ internal/model（统一 Product / Variant）
              ─→ internal/imagefilter（图片 URL 检查、403 剔除、去重）
+             ─→ image403-downloader.exe（浏览器补下载已确认 403，默认转 PNG）
              ─→ internal/exporter/dianxiaomi | internal/exporter/medusa
 ```
 
@@ -156,6 +188,25 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
 通过 `-config config.json` 使用，所有键都可省略，只需写要覆盖的项；`config.example.json` 列出全部默认值。
 
 - `output_medusa`：顶层开关，默认 `false`。直接拖入 CSV 时只生成店小秘 XLSX；设为 `true` 后同时生成 Medusa CSV。命令行显式 `-target` 优先。
+
+- `download_403`：默认启用，由主程序自动调用同目录的 `image403-downloader.exe`。常用配置如下：
+
+  ```json
+  {
+    "download_403": {
+      "enabled": true,
+      "browser_timeout_seconds": 60,
+      "max_image_mb": 25,
+      "output_format": "png",
+      "jpeg_quality": 90,
+      "headless": true,
+      "browser_path": "",
+      "profile_dir": ""
+    }
+  }
+  ```
+
+  `output_format` 支持 `png`、`jpg`/`jpeg` 和 `original`；默认 `png`。`browser_path` 留空时自动查找 Chrome 或 Edge。`profile_dir` 留空时每次建立隔离临时浏览器配置并在任务结束后清理，避免并发任务争用；指定固定目录时不得同时运行多个使用相同目录的任务。设置 `enabled: false` 可只过滤 403 而不下载。
 
 - `source_fields`：来源 CSV 哪一列是什么。未写的键保持 Shopify 默认。例如另一种来源：
 

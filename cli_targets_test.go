@@ -14,7 +14,7 @@ import (
 )
 
 func TestCLIOutputMedusaConfiguration(t *testing.T) {
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer s.Close()
 	for _, tc := range []struct {
 		name, cfg, target string
@@ -47,11 +47,15 @@ func TestCLIOutputMedusaConfiguration(t *testing.T) {
 			if err := run(); err != nil {
 				t.Fatal(err)
 			}
+			resultDir := filepath.Join(dir, "shopify_转换结果")
 			for path, want := range map[string]bool{"shopify_店小秘.xlsx": tc.dxm, "shopify_medusa.csv": tc.medusa} {
-				_, err := os.Stat(filepath.Join(dir, path))
+				_, err := os.Stat(filepath.Join(resultDir, path))
 				if (err == nil) != want {
 					t.Fatalf("%s: %v", path, err)
 				}
+			}
+			if _, err := os.Stat(filepath.Join(resultDir, "conversion-report.json")); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
