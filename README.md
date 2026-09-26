@@ -66,6 +66,7 @@ go build -o bin/image403-downloader.exe ./cmd/image403-downloader
 | 店小秘文案 | 标题、描述正文、规格名/值等删除 Emoji；保留中文、英文、数字、普通标点、HTML 和普通链接 | 固定规则；Medusa 保留原文 |
 | 申报价格 | 来源价 × `price_multiplier` × CNY 汇率；默认把来源价视为 USD，按 `USD × 7` 输出 CNY | `dianxiaomi.currency_conversion`、`price_multiplier` |
 | 建议售价 | 默认把爬取价格直接填入“建议售价（USD）”，不乘 `price_multiplier` | `dianxiaomi.suggested_price.source_currency` 支持 USD、EUR、CNY 或 rates 中新增币种 |
+| 店小秘库存 | 所有 SKU 统一填写 `200`，完全忽略 Shopify CSV 中的库存数量 | `dianxiaomi.inventory_quantity`，允许配置为 0 或其他非负整数 |
 | 店小秘默认值 | 申报价 500；长宽高各 10 cm；重量 100 g；发货时效 9 天；产地 `中国-广东省` | `dianxiaomi.defaults` 或 `sku_overrides` |
 | 必填保护 | 所有星号列和产地不能为空；申报价、尺寸、重量必须为正数；无法补齐时只写报告，不生成无效 XLSX | 固定规则，无需开启 `-strict` |
 
@@ -137,10 +138,10 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
 | variant_image_url（Variant Image） | 预览图；缺失时用轮播图第一张 |
 | image_url + image_position + variant_image_url | 轮播图：商品图优先，按 SKU 顺序补入不同的有效变种图，去重后最多 10 张，不重复补齐 |
 | weight_grams（Variant Grams） | 重量（g）；0 视为缺失 |
-| inventory_qty（Variant Inventory Qty） | 库存 |
+| inventory_qty（Variant Inventory Qty） | 店小秘不使用该值；库存统一取 `dianxiaomi.inventory_quantity`（默认 200） |
 | barcode（Variant Barcode） | 识别码；类型需显式配置 |
 
-缺失申报价格默认 500，长宽高各 10 cm，重量 100 g，均为临时默认值；产品素材图使用最终预览图。dianxiaomi.defaults 优先于这些默认值，sku_overrides 优先级最高，但最终仍受图片兜底、去重、文案清理及必填校验约束。素材图是否 1:1 且大于 800×800px 需人工核验。默认会把 Variant Price 当作申报价格；若它是零售价，设置 `"source_fields": {"price": ""}` 关闭或用 `price_multiplier` 换算。
+缺失申报价格默认 500，长宽高各 10 cm，重量 100 g，均为临时默认值；产品素材图使用最终预览图。库存不读取 Shopify 的 `Variant Inventory Qty`，所有 SKU 在最终写入时统一使用 `dianxiaomi.inventory_quantity`，默认 200；该专用配置优先于 `defaults` 和 `sku_overrides` 中可能存在的“库存”值。其他字段由 `dianxiaomi.defaults` 优先覆盖临时默认值，`sku_overrides` 优先级更高，但最终仍受图片兜底、去重、文案清理及必填校验约束。素材图是否 1:1 且大于 800×800px 需人工核验。默认会把 Variant Price 当作申报价格；若它是零售价，设置 `"source_fields": {"price": ""}` 关闭或用 `price_multiplier` 换算。
 
 店小秘自动清理标题、描述正文、变种属性名/值、包装清单、敏感属性值、产地和 SKU 货号中的 Emoji（包括组合表情、肤色、旗帜、键帽及 HTML 编码表情）。文案保留普通文字、数字、标点、HTML 标签和非图片链接；SKU 的 Emoji 清理是店小秘固定规则，`remove_chinese_in_sku` 只决定是否额外删除汉字。产品货号默认只保留 `A-Z a-z 0-9 . _ -`，清理发生在 SKU 覆盖之后，防止覆盖值重新带入中文、Emoji、空格、斜杠或括号；设置 `"clean_product_code": false` 可关闭。
 
@@ -215,6 +216,12 @@ Shopify CSV ─→ internal/source/shopify（按 source_fields 解析）
   ```
 
 - `dianxiaomi`：`price_multiplier`、`defaults`（仅填空白）、`sku_overrides`（按 SKU 覆盖）。键为模板列名（含星号、全角括号）；申报价列名为 `*申报价格\n(店铺币种)`，JSON 中 `\n` 表示换行。
+
+  `inventory_quantity` 控制店小秘模板的统一库存，默认 `200`。程序忽略 Shopify CSV 中每个 SKU 的库存数量，并在所有 `defaults` 和 `sku_overrides` 处理完成后写入该值，因此不会出现同批 SKU 库存不一致。可配置为 0 或其他非负整数，负数会直接报错：
+
+  ```json
+  { "dianxiaomi": { "inventory_quantity": 200 } }
+  ```
 
   `clean_product_code` 默认为 `true`：清理产品货号，只保留 `A-Z a-z 0-9 . _ -`。它在 `defaults` 和 `sku_overrides` 之后执行，因此覆盖值也不能重新带入中文、Emoji、空格、斜杠或括号。设置为 `false` 可保留来源或覆盖的原始产品货号。
 

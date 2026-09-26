@@ -54,6 +54,9 @@ func TestDefaultCurrencyInExportedWorkbook(t *testing.T) {
 			if !strings.Contains(string(xml), `<c r="X2" t="n"><v>19.99</v></c>`) {
 				t.Fatal("export missing raw USD suggested price")
 			}
+			if !strings.Contains(string(xml), `<c r="Y2" t="n"><v>200</v></c>`) {
+				t.Fatal("export missing configured uniform inventory")
+			}
 			if !strings.Contains(string(xml), `<c r="Z2" t="n"><v>9</v></c>`) {
 				t.Fatal("export missing default shipping lead time")
 			}
@@ -110,6 +113,9 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	}
 	if cfg.Dianxiaomi.RemoveChineseInSKU == nil || *cfg.Dianxiaomi.RemoveChineseInSKU {
 		t.Fatal("remove_chinese_in_sku=false 未生效")
+	}
+	if cfg.Dianxiaomi.InventoryQuantity == nil || *cfg.Dianxiaomi.InventoryQuantity != 200 {
+		t.Fatal("省略 inventory_quantity 时应保留默认库存 200")
 	}
 }
 

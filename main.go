@@ -43,11 +43,13 @@ type Config struct {
 
 func defaultConfig() Config {
 	suggestedPriceEnabled := true
+	inventoryQuantity := 200
 	return Config{
 		PriceMultiplier: 1,
 		Defaults:        map[string]string{},
 		SourceFields:    shopify.DefaultFields(),
 		Dianxiaomi: dianxiaomi.Options{
+			InventoryQuantity: &inventoryQuantity,
 			CurrencyConversion: dianxiaomi.CurrencyConversion{
 				Enabled: true, SourceCurrency: "USD", Rates: map[string]float64{"USD": 7, "EUR": 10, "CNY": 1},
 			},
@@ -158,6 +160,7 @@ func (c Config) dianxiaomiOptions() dianxiaomi.Options {
 		SourceDescriptions: c.Dianxiaomi.SourceDescriptions,
 		CurrencyConversion: c.Dianxiaomi.CurrencyConversion,
 		SuggestedPrice:     c.Dianxiaomi.SuggestedPrice,
+		InventoryQuantity:  c.Dianxiaomi.InventoryQuantity,
 		FallbackImages:     c.Dianxiaomi.FallbackImages,
 		PriceMultiplier:    c.Dianxiaomi.PriceMultiplier,
 		Defaults:           map[string]string{},

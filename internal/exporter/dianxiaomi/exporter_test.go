@@ -239,11 +239,35 @@ func TestDefaultsOverridesAndWeight(t *testing.T) {
 	if a[idx("*长（cm）")] != "20" || c[idx("*长（cm）")] != "15" || a[priceCol] != "500" {
 		t.Fatal(rows)
 	}
-	if a[idx("*重量（g）")] != "100" || c[idx("*重量（g）")] != "250" || a[idx("库存")] != "7" || a[idx("识别码")] != "123" {
+	if a[idx("*重量（g）")] != "100" || c[idx("*重量（g）")] != "250" || a[idx("库存")] != "200" || c[idx("库存")] != "200" || a[idx("识别码")] != "123" {
 		t.Fatal(rows)
 	}
 	if !strings.Contains(strings.Join(msgs, "|"), "缺少识别码类型") {
 		t.Fatal(msgs)
+	}
+}
+
+func TestInventoryIsUniformAndConfigurable(t *testing.T) {
+	b := tu.Shopify(
+		tu.Row{"Handle": "p", "Title": "T", "Option1 Value": "Red", "Variant SKU": "a", "Variant Inventory Qty": "7"},
+		tu.Row{"Handle": "p", "Option1 Value": "Blue", "Variant SKU": "b", "Variant Inventory Qty": "999"},
+	)
+	quantity := 350
+	o := opts()
+	o.InventoryQuantity = &quantity
+	o.Defaults = map[string]string{"库存": "88"}
+	o.Overrides = map[string]map[string]string{"a": {"库存": "99"}}
+	rows, _ := export(t, b, o)
+	for _, row := range rows {
+		if row[idx("库存")] != "350" {
+			t.Fatal(rows)
+		}
+	}
+	zero := 0
+	o.InventoryQuantity = &zero
+	rows, _ = export(t, b, o)
+	if rows[0][idx("库存")] != "0" || rows[1][idx("库存")] != "0" {
+		t.Fatal(rows)
 	}
 }
 
@@ -253,6 +277,10 @@ func TestValidate(t *testing.T) {
 	}
 	if (Options{PriceMultiplier: 1, Defaults: map[string]string{"不存在": "1"}}).Validate() == nil {
 		t.Fatal("未知字段应报错")
+	}
+	negative := -1
+	if (Options{PriceMultiplier: 1, InventoryQuantity: &negative}).Validate() == nil {
+		t.Fatal("负库存配置应报错")
 	}
 }
 

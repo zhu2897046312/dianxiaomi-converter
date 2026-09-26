@@ -18,6 +18,7 @@
   },
   "dianxiaomi": {
     "price_multiplier": 1,
+    "inventory_quantity": 200,
     "clean_product_code": true,
     "remove_chinese_in_sku": true,
     "repeat_images_to_ten": false,

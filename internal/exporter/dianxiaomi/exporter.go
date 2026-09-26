@@ -30,6 +30,7 @@ type Options struct {
 	RemoveChineseInSKU *bool                        `json:"remove_chinese_in_sku"` // 默认开启；控制汉字清理。Emoji 始终删除。
 	CurrencyConversion CurrencyConversion           `json:"currency_conversion"`
 	SuggestedPrice     SuggestedPrice               `json:"suggested_price"`
+	InventoryQuantity  *int                         `json:"inventory_quantity"` // nil 使用 200；最终统一写入所有 SKU，不读取来源库存。
 	PriceMultiplier    float64                      `json:"price_multiplier"`
 	Defaults           map[string]string            `json:"defaults"`      // 仅填充空白单元格
 	Overrides          map[string]map[string]string `json:"sku_overrides"` // 按来源 SKU 强制覆盖，优先级最高
@@ -83,6 +84,9 @@ func (c CurrencyConversion) suggestedPriceUSD(n float64, configuredSource string
 }
 
 func (o Options) Validate() error {
+	if o.InventoryQuantity != nil && *o.InventoryQuantity < 0 {
+		return fmt.Errorf("inventory_quantity 不能小于 0")
+	}
 	if _, err := o.CurrencyConversion.rate(); err != nil {
 		return err
 	}
@@ -124,6 +128,10 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 	rate, err := opts.CurrencyConversion.rate()
 	if err != nil {
 		return nil, report, err
+	}
+	inventoryQuantity := 200
+	if opts.InventoryQuantity != nil {
+		inventoryQuantity = *opts.InventoryQuantity
 	}
 	out := [][]string{}
 	seen := map[string]bool{}
@@ -184,7 +192,6 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 				"变种属性值二":   opt(1).Value,
 				"预览图":      v.Image,
 				"*重量（g）":   weightGrams(v.WeightGrams),
-				"库存":       v.InventoryQty,
 				"识别码":      v.Barcode,
 			}
 			if old, ok := titles[p.Title]; ok && old != h {
@@ -242,6 +249,8 @@ func Export(products []model.Product, opts Options) ([][]string, model.Report, e
 			for k, val := range opts.Overrides[sourceSKU] {
 				m[k] = val
 			}
+			// 店小秘库存是目标平台专用的统一值，不读取 Shopify 库存，也不允许通用默认值或 SKU 覆盖打破一致性。
+			m["库存"] = strconv.Itoa(inventoryQuantity)
 			// Defaults and overrides must not restore duplicate carousel entries either.
 			finalImages := imagefilter.List(m["*轮播图"])
 			if len(finalImages) > maxCarouselImages {
